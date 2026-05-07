@@ -1,0 +1,1001 @@
+## V1.2.1 — 2026-05-01 13:40 — ledtyokkari remote (RGB colours + bigger fonts)
+##   • RGB readout: each row drawn in its namesake colour (R red, G green,
+##     B blue) instead of all three sharing one shade. Bright variants
+##     when random mode is active, dim variants when idle.
+##   • Font on the RGB rows bumped one notch (font_small → font_med =
+##     14→18 px). Rows respaced from 18 px apart to 24 px so the larger
+##     glyphs don't pile up.
+##   • Sleep countdown indicator: text bumped to font_med, bed pictogram
+##     scaled proportionally (16×8 → 19×11) to match.
+##
+## V1.2 — 2026-05-01 09:20 — display UX update (carry-over notes)
+##   • Sleep countdown indicator on the right side of the round display:
+##     small bed pictogram drawn from primitives + "Ns" text right-aligned
+##     at x=225. Counts down from 60 → 0 in step with the idle-sleep
+##     timer. Colour starts sleepy-blue (0x6080A0), turns amber under
+##     10 s, red under 3 s. Hidden in the "panel off" minimal view.
+##   • "Panel off" minimal view: when last_light_on is false, the display
+##     drops everything except "Panel is off" text + centred battery icon.
+##
+## Versioning scheme (also applies to other coding projects):
+##   V1.0.x = bug fix, comment, typo, cosmetic-only edit
+##   V1.x   = feature change, behaviour tweak, display/UX polish
+##   V2     = major hardware/architecture change (e.g. add motion sensor,
+##           add power-latch, swap MCU)
+################################################################################
+# Substitution Variables
+################################################################################
+substitutions:
+  esphome_name: esp32ledtyokkariremote
+  device_internal_name: esp32ledtyokkariremote
+  device_wifi_name: esp32ledtyokkariremote
+  device_friendly_name: "esp32ledtyokkariremote"
+  device_ip_address: 192.168.15.172
+  light_entity: light.ledtyokkari
+  device_sampling_time: 600s
+
+################################################################################
+# Globals
+# restore_value: yes    => persisted across deep-sleep / reboot
+#                          (ESP32: NVS in flash; only re-written when value changes)
+# restore_value: no     => RAM only
+################################################################################
+globals:
+  - id: last_user_input_ms        # millis() of last knob/button event
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+
+  # ---- Persisted state — display draws these instantly on wake ----
+  - id: last_brightness_pct       # 1..100
+    type: int
+    restore_value: yes
+    initial_value: "50"
+
+  - id: last_color_temp_k         # 2200..6500
+    type: int
+    restore_value: yes
+    initial_value: "3000"
+
+  - id: last_light_on             # toggled by power button
+    type: bool
+    restore_value: yes
+    initial_value: "false"
+
+  - id: last_battery_pct          # 0..100, refreshed every minute
+    type: int
+    restore_value: yes
+    initial_value: "100"
+
+  # ---- "Undo random" — saved one step before a random color is applied ----
+  - id: prev_brightness_pct       # snapshot of brightness before random
+    type: int
+    restore_value: yes
+    initial_value: "50"
+
+  - id: prev_color_temp_k         # snapshot of color temp before random
+    type: int
+    restore_value: yes
+    initial_value: "3000"
+
+  - id: random_active             # true while in random-color mode
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+  - id: sleeping_soon             # set true ~2 s before deep sleep so the
+                                  # display can show a goodbye screen
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+  - id: startup_visible           # true for ~2 s after boot — splash screen
+    type: bool
+    restore_value: no
+    initial_value: "true"
+
+  - id: adxl345_init_done         # one-shot guard for the interval-based
+    type: bool                    # init kick (V1.0.7). Reset on every boot.
+    restore_value: no
+    initial_value: "false"
+
+  # Last random RGB applied — shown next to the RND label on screen
+  - id: last_random_r
+    type: int
+    restore_value: no
+    initial_value: "255"
+  - id: last_random_g
+    type: int
+    restore_value: no
+    initial_value: "255"
+  - id: last_random_b
+    type: int
+    restore_value: no
+    initial_value: "255"
+
+################################################################################
+# Board Configuration
+################################################################################
+esphome:
+  name: ${esphome_name}
+  friendly_name: ${device_friendly_name}
+  # Two on_boot priorities:
+  #  600  — earliest, before WiFi/API. Reset the idle timer and force one display
+  #         frame using the persisted values so the screen shows correct numbers
+  #         the instant the user wakes the remote.
+  #  -10  — after API is up; just confirms link.
+  on_boot:
+    - priority: 600
+      then:
+        - lambda: |-
+            id(startup_visible)     = true;
+            id(last_user_input_ms)  = millis();
+        - component.update: round_lcd        # paint splash immediately
+        - delay: 2s                          # hold the splash for 2 s
+        - lambda: 'id(startup_visible) = false;'
+        - logger.log:
+            level: INFO
+            format: "Boot — restored: %d%%, %d K, on=%d, batt=%d%%"
+            args: [ 'id(last_brightness_pct)', 'id(last_color_temp_k)',
+                    'id(last_light_on)', 'id(last_battery_pct)' ]
+        - component.update: round_lcd
+    - priority: -10
+      then:
+        # NOTE V1.0.7: adxl345_init is now kicked from an `interval:` block
+        # below (see `adxl_init_kick`). The on_boot priority -10 trigger
+        # produced ZERO log output in V1.0.6 — even the "API connected"
+        # line below never appeared — so we no longer rely on it for the
+        # init step. Left in place as a passive diagnostic: if these logs
+        # finally show up, we know the on_boot hook started working.
+        - wait_until:
+            api.connected:
+        - logger.log:
+            level: INFO
+            tag: boot
+            format: "API connected — remote ready (priority -10 hook fired)"
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB              # WROOM-1 N16R8 has 16 MB flash
+  framework:
+    type: esp-idf
+
+################################################################################
+# PSRAM — N16R8 has 8 MB octal PSRAM. Enabling it gives the display
+# component a much larger buffer (per ESPHome's hint at validation time).
+################################################################################
+psram:
+  mode: octal
+  speed: 80MHz
+
+################################################################################
+# Logging
+# DEBUG level needed for [C] config dumps + early-boot diagnostics.
+# Larger task_log_buffer keeps the ADXL345 init lines around long enough
+# to be transmitted once the API client connects.
+################################################################################
+logger:
+  level: DEBUG
+  task_log_buffer_size: 4096
+
+################################################################################
+# Home Assistant API
+################################################################################
+api:
+  reboot_timeout: 0s
+
+################################################################################
+# OTA
+################################################################################
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+################################################################################
+# WiFi
+################################################################################
+wifi:
+  networks:
+    - ssid: !secret wifi_SSID
+      password: !secret iot_password
+  manual_ip:
+    static_ip: ${device_ip_address}
+    gateway: 192.168.15.1
+    subnet: 255.255.255.0
+  min_auth_mode: WPA2
+
+  # Fallback hotspot if home WiFi is unreachable
+  ap:
+    ssid: !secret fallback_ssid
+    password: !secret fallback_password
+
+captive_portal:
+
+################################################################################
+# Time
+################################################################################
+time:
+  - platform: homeassistant
+    id: my_time
+
+################################################################################
+# I2C bus — shared by ADXL345 motion sensor (and future DRV2605L haptic driver)
+################################################################################
+i2c:
+  id: bus_a
+  sda: GPIO17
+  scl: GPIO18
+  frequency: 100kHz          # conservative for breadboard wires
+  scan: true                 # logs detected I2C devices at boot — handy for debug
+
+################################################################################
+# SPI bus — drives the GC9A01 round display
+################################################################################
+spi:
+  clk_pin: GPIO12              # display "SCL" pin
+  mosi_pin: GPIO11             # display "SDA" pin
+  # No MISO — display is write-only
+
+################################################################################
+# Fonts (downloaded from Google Fonts at compile time)
+################################################################################
+font:
+  - file: "gfonts://Roboto"
+    id: font_big
+    size: 38
+  - file: "gfonts://Roboto"
+    id: font_num               # for the large brightness / kelvin numbers in the middle
+    size: 30
+  - file: "gfonts://Roboto"
+    id: font_med
+    size: 18
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: 14
+
+################################################################################
+# Display: 1.28" round 240x240 GC9A01
+# Pinout: VCC=3V3, GND=GND, SCL=GPIO12, SDA=GPIO11, DC=GPIO9, CS=GPIO10, RST=GPIO14
+# Note: 7-pin module — no BL pin, backlight is permanently wired to VCC.
+################################################################################
+display:
+  - platform: ili9xxx
+    model: GC9A01A
+    id: round_lcd
+    cs_pin: GPIO10
+    dc_pin: GPIO9
+    reset_pin: GPIO14
+    update_interval: 250ms
+    rotation: 0
+    invert_colors: true        # GC9A01A panels almost always need this
+    lambda: |-
+      const int cx = 120, cy = 120;
+
+      // ===================================================================
+      // 1. STARTUP SPLASH — first ~2 s after boot
+      // ===================================================================
+      if (id(startup_visible)) {
+        it.fill(Color::BLACK);
+        it.print(cx, cy - 14, id(font_med), Color(0xFFC080), TextAlign::CENTER, "Kattopaneeli ohjain");
+        it.print(cx, cy + 18, id(font_med), Color(0x808080), TextAlign::CENTER, "by Marko");
+        return;
+      }
+
+      // ===================================================================
+      // 2. SLEEP TAKEOVER — last ~2 s before deep_sleep.enter
+      // ===================================================================
+      if (id(sleeping_soon)) {
+        it.fill(Color::BLACK);
+        it.print(cx, cy - 16, id(font_med), Color(0x6080A0), TextAlign::CENTER, "going to sleep");
+        it.print(cx, cy + 22, id(font_big), Color(0x6080A0), TextAlign::CENTER, "Z z z");
+        return;
+      }
+
+      // ===================================================================
+      // 3. NORMAL VIEW — split into "panel ON" (full UI) and "panel OFF"
+      //    (minimal: just "Panel is off" + battery icon, V1.2).
+      //    Sleep countdown indicator shown only in panel-ON mode.
+      // ===================================================================
+      it.fill(Color::BLACK);
+
+      // ----- Compute idle-sleep countdown (used by panel-ON sleep icon) -
+      // The idle timer in `interval:` calls enter_sleep_animated 60 s after
+      // last_user_input_ms. We mirror that 60 s window here and round up
+      // so the user sees a clean integer ticking from "60s" down to "0s".
+      int idle_ms = (int)(millis() - id(last_user_input_ms));
+      int sleep_remaining_ms = 60000 - idle_ms;
+      if (sleep_remaining_ms < 0)     sleep_remaining_ms = 0;
+      if (sleep_remaining_ms > 60000) sleep_remaining_ms = 60000;
+      int sleep_remaining_s = (sleep_remaining_ms + 999) / 1000;
+      // Colour graduates from sleepy blue → amber → red as we near zero
+      // (matches the colours used by the "going to sleep" takeover screen).
+      Color sleep_col(0x6080A0);
+      if (sleep_remaining_s <= 10) sleep_col = Color(0xC08040);
+      if (sleep_remaining_s <=  3) sleep_col = Color(0xC04040);
+
+      // ----- 3a. PANEL OFF (minimal view) -------------------------------
+      if (!id(last_light_on)) {
+        it.print(cx, 38, id(font_med), Color(0xFFC080),
+                 TextAlign::TOP_CENTER, "Panel is off");
+
+        // Battery icon (centre) — duplicated from the panel-ON branch
+        // so the panel-off view stays self-contained.
+        int bp = id(last_battery_pct);
+        if (bp < 0) bp = 0; if (bp > 100) bp = 100;
+        const int bw = 56, bh = 24;
+        const int bx = cx - bw / 2, by = cy - bh / 2;
+        Color batt_col(0x40C040);
+        if (bp < 30) batt_col = Color(0xE0A030);
+        if (bp < 15) batt_col = Color(0xE03030);
+        it.rectangle(bx, by, bw, bh, Color(0xCCCCCC));
+        it.filled_rectangle(bx + bw, by + 7, 4, bh - 14, Color(0xCCCCCC));
+        int fill_w = (bw - 4) * bp / 100;
+        if (fill_w > 0) it.filled_rectangle(bx + 2, by + 2, fill_w, bh - 4, batt_col);
+        it.printf(cx, cy, id(font_small), Color::BLACK, TextAlign::CENTER, "%d%%", bp);
+        return;
+      }
+
+      // ----- 3b. PANEL ON (full UI) -------------------------------------
+      // ----- Resolve current values (live pot or persisted) -------------
+      float vb = id(pot_brightness_v).state;
+      float vk = id(pot_colortemp_v).state;
+      int pct, kelvin;
+      if (std::isfinite(vb)) {
+        pct = (int)(vb / 3.00f * 100.0f);
+        if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+      } else {
+        pct = id(last_brightness_pct);
+      }
+      if (std::isfinite(vk)) {
+        kelvin = (int)(2200.0f + (vk / 3.00f) * (6500.0f - 2200.0f));
+        if (kelvin < 2200) kelvin = 2200; if (kelvin > 6500) kelvin = 6500;
+      } else {
+        kelvin = id(last_color_temp_k);
+      }
+
+      // Tanner Helland approximation of black-body radiation colour.
+      // Output for 2200–6500 K range:
+      //   2200 K → rgb(255, 146,  39)   warm orange
+      //   3000 K → rgb(255, 184, 110)   incandescent
+      //   4000 K → rgb(255, 213, 166)   cool white
+      //   5000 K → rgb(255, 234, 206)   daylight
+      //   6500 K → rgb(255, 254, 250)   overcast / cool
+      float t = kelvin / 100.0f;
+      uint8_t kr = 255;
+      float gf = 99.4708025861f * logf(t) - 161.1195681661f;
+      if (gf < 0) gf = 0; if (gf > 255) gf = 255;
+      uint8_t kg = (uint8_t)gf;
+      uint8_t kb;
+      if (t <= 19.0f) {
+        kb = 0;
+      } else {
+        float bf = 138.5177312231f * logf(t - 10.0f) - 305.0447927307f;
+        if (bf < 0) bf = 0; if (bf > 255) bf = 255;
+        kb = (uint8_t)bf;
+      }
+      Color kelvin_color(kr, kg, kb);
+
+      // ----- Arcs (drawn as 1° radial spokes from r-6 to r+6 → 12 px) ---
+      const int arc_r = 108;
+      const int arc_h = 6;                  // half-thickness in pixels
+      Color arc_bg(0x202020);
+
+      // Brightness arc: top of circle, 30° (right) → 150° (left).
+      int bright_to = 150 - (int)(120.0f * pct / 100.0f);
+      Color bright_color = id(last_light_on) ? Color(0xFFFFFF) : Color(0x404040);
+      for (int a = 30; a <= 150; a++) {
+        float rad = a * 3.14159265f / 180.0f;
+        float ca = cosf(rad), sa = sinf(rad);
+        int x_in  = cx + (int)((arc_r - arc_h) * ca);
+        int y_in  = cy - (int)((arc_r - arc_h) * sa);
+        int x_out = cx + (int)((arc_r + arc_h) * ca);
+        int y_out = cy - (int)((arc_r + arc_h) * sa);
+        Color c = (a >= bright_to) ? bright_color : arc_bg;
+        it.line(x_in, y_in, x_out, y_out, c);
+      }
+
+      // Color-temp arc: bottom of circle, 210° → 330°.
+      int kt_pct = (int)((kelvin - 2200.0f) * 100.0f / (6500.0f - 2200.0f));
+      int kt_to  = 210 + (int)(120.0f * kt_pct / 100.0f);
+      for (int a = 210; a <= 330; a++) {
+        float rad = a * 3.14159265f / 180.0f;
+        float ca = cosf(rad), sa = sinf(rad);
+        int x_in  = cx + (int)((arc_r - arc_h) * ca);
+        int y_in  = cy - (int)((arc_r - arc_h) * sa);
+        int x_out = cx + (int)((arc_r + arc_h) * ca);
+        int y_out = cy - (int)((arc_r + arc_h) * sa);
+        // Per-spoke colour: use the kelvin gradient evaluated at this angle's kelvin
+        if (a <= kt_to) {
+          float frac = (a - 210) / 120.0f;                 // 0..1 across the arc
+          int k_at = (int)(2200.0f + frac * (6500.0f - 2200.0f));
+          float ts = k_at / 100.0f;
+          uint8_t r2 = 255;
+          float g2 = 99.4708025861f * logf(ts) - 161.1195681661f;
+          if (g2 < 0) g2 = 0; if (g2 > 255) g2 = 255;
+          float b2;
+          if (ts <= 19.0f) b2 = 0;
+          else { b2 = 138.5177312231f * logf(ts - 10.0f) - 305.0447927307f;
+                 if (b2 < 0) b2 = 0; if (b2 > 255) b2 = 255; }
+          it.line(x_in, y_in, x_out, y_out, Color(r2, (uint8_t)g2, (uint8_t)b2));
+        } else {
+          it.line(x_in, y_in, x_out, y_out, arc_bg);
+        }
+      }
+
+      // ----- Numbers near each arc --------------------------------------
+      it.printf(cx, 56, id(font_num), bright_color, TextAlign::CENTER, "%d%%", pct);
+      it.printf(cx, 184, id(font_num), kelvin_color, TextAlign::CENTER, "%dK", kelvin);
+
+      // ----- RGB readout (left side, ALWAYS visible, vertically stacked)
+      // Each row is rendered in its namesake colour (R red, G green, B blue),
+      // bright when random mode is active, dimmed when idle. Font bumped
+      // one notch in V1.2.1 (font_small → font_med); rows now 24 px apart
+      // so the 18 px-tall text doesn't pile into adjacent rows.
+      bool ra = id(random_active);
+      Color r_col = ra ? Color(0xFF6060) : Color(0x803030);
+      Color g_col = ra ? Color(0x60FF60) : Color(0x308030);
+      Color b_col = ra ? Color(0x6080FF) : Color(0x303080);
+      it.printf(15,  86, id(font_med), r_col, TextAlign::TOP_LEFT,
+                "R=%d", id(last_random_r));
+      it.printf(15, 110, id(font_med), g_col, TextAlign::TOP_LEFT,
+                "G=%d", id(last_random_g));
+      it.printf(15, 134, id(font_med), b_col, TextAlign::TOP_LEFT,
+                "B=%d", id(last_random_b));
+
+      // ----- RND label + colour swatch (right side, only when random active)
+      if (id(random_active)) {
+        it.print(225, 110, id(font_small), Color(0xFF80C0),
+                 TextAlign::TOP_RIGHT, "RND");
+        Color swatch_col((uint8_t)id(last_random_r),
+                         (uint8_t)id(last_random_g),
+                         (uint8_t)id(last_random_b));
+        it.filled_rectangle(207, 128, 18, 12, swatch_col);
+      }
+
+      // ----- Battery icon (centre) --------------------------------------
+      int bp = id(last_battery_pct);
+      if (bp < 0) bp = 0; if (bp > 100) bp = 100;
+      const int bw = 56, bh = 24;
+      const int bx = cx - bw / 2, by = cy - bh / 2;
+      Color batt_col(0x40C040);
+      if (bp < 30) batt_col = Color(0xE0A030);
+      if (bp < 15) batt_col = Color(0xE03030);
+      it.rectangle(bx, by, bw, bh, Color(0xCCCCCC));
+      it.filled_rectangle(bx + bw, by + 7, 4, bh - 14, Color(0xCCCCCC));
+      int fill_w = (bw - 4) * bp / 100;
+      if (fill_w > 0) it.filled_rectangle(bx + 2, by + 2, fill_w, bh - 4, batt_col);
+      it.printf(cx, cy, id(font_small), Color::BLACK, TextAlign::CENTER, "%d%%", bp);
+
+      // ----- Sleep countdown (right side) -------------------------------
+      // Bed pictogram + "Ns" text. Sits above the RND label / swatch
+      // (y=110 / y=128) so they don't overlap when random mode is active.
+      // V1.2.1: font bumped to font_med to match the new RGB rows; bed
+      // pictogram scaled up proportionally (16×8 → 19×11) so the icon
+      // doesn't look orphaned next to the bigger text.
+      //
+      // Bed at (bedx, bedy) drawn from primitives, 19 px wide × 11 tall:
+      //   ▌▌      ← headboard (left vertical bar, 3px wide × 11 tall)
+      //   ▌▌####  ← pillow (5×4) tucked against the headboard top
+      //   ▌▌══════← mattress (15×4) along the bottom
+      const int bedx = 162, bedy = 86;
+      it.filled_rectangle(bedx,     bedy,      3, 11, sleep_col);  // headboard
+      it.filled_rectangle(bedx + 4, bedy + 1,  5,  4, sleep_col);  // pillow
+      it.filled_rectangle(bedx + 3, bedy + 7, 15,  4, sleep_col);  // mattress
+      it.printf(225, bedy - 1, id(font_med), sleep_col,
+                TextAlign::TOP_RIGHT, "%ds", sleep_remaining_s);
+
+################################################################################
+# Binary Sensors
+################################################################################
+binary_sensor:
+  # ESP status
+  - platform: status
+    name: "Status"
+    id: ${device_internal_name}_status
+
+  # ----- Power button — GPIO6 -----
+  - platform: gpio
+    name: "Power button"
+    id: btn_power
+    pin:
+      number: GPIO6
+      allow_other_uses: true    # also referenced by deep_sleep wake
+      mode:
+        input: true
+        pullup: true
+      inverted: true            # pressed = LOW
+    on_press:
+      - lambda: 'id(last_user_input_ms) = millis();'
+    on_click:
+      # Short press 30 ms – 800 ms: toggle the panel
+      - min_length: 30ms
+        max_length: 800ms
+        then:
+          - lambda: 'id(last_light_on) = !id(last_light_on);'
+          - homeassistant.service:
+              service: light.toggle
+              data:
+                entity_id: ${light_entity}
+      # Long press ≥1.5 s: enter deep sleep (with goodbye screen)
+      - min_length: 1500ms
+        max_length: 5000ms
+        then:
+          - logger.log: "Long press → animated sleep"
+          - script.execute: enter_sleep_animated
+
+  # ----- Motion wake (ADXL345 INT1 on GPIO2) -----
+  # Re-enabled in V1.1 after the V1.0.7 boot log confirmed DEVID=0xE5 and
+  # DATA_FORMAT=0x28 (INT_INVERT bit took, INT line is active-LOW).
+  # ADXL345 INT1 is a push-pull output, so an external pull-up isn't strictly
+  # required — but `pullup: true` keeps the line defined if the chip is
+  # somehow not driving it (belt-and-braces).
+  # `allow_other_uses: true` mirrors the same flag on the GPIO2 entry under
+  # `deep_sleep.esp32_ext1_wakeup.pins` — ESPHome needs both ends marked.
+  - platform: gpio
+    name: "Motion wake"
+    id: motion_int
+    pin:
+      number: GPIO2
+      allow_other_uses: true        # also referenced by deep_sleep wake list
+      mode:
+        input: true
+        pullup: true                # belt-and-braces; ADXL drives this anyway
+      inverted: true                # active-LOW: triggered = LOW
+    on_press:
+      - lambda: 'id(last_user_input_ms) = millis();'
+      # Latched IRQ — read INT_SOURCE (0x30) to clear so the line releases.
+      - lambda: |-
+          auto* bus = id(bus_a);
+          uint8_t reg = 0x30, s;
+          bus->write(0x53, &reg, 1, false);   // no STOP — repeated start
+          bus->read(0x53, &s, 1);
+
+  # ----- Randomizer button — GPIO7 -----
+  - platform: gpio
+    name: "Random button"
+    id: btn_random
+    pin:
+      number: GPIO7
+      allow_other_uses: true    # also referenced by deep_sleep wake
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    on_press:
+      - lambda: 'id(last_user_input_ms) = millis();'
+    on_click:
+      # Short press: snapshot current settings, then apply random color
+      - min_length: 30ms
+        max_length: 800ms
+        then:
+          - script.execute: random_color
+      # Long press: restore the snapshot (undo the random)
+      - min_length: 1500ms
+        max_length: 5000ms
+        then:
+          - script.execute: restore_previous
+
+################################################################################
+# Sensors
+################################################################################
+sensor:
+  # ----- Brightness pot — GPIO4 / ADC1_CH3 -----
+  - platform: adc
+    pin: GPIO4
+    id: pot_brightness_v
+    name: "Brightness pot"
+    update_interval: 100ms
+    attenuation: 12db
+    filters:
+      - throttle: 100ms
+      - sliding_window_moving_average:
+          window_size: 4
+          send_every: 1
+      - delta: 0.04             # only push to HA on ≥40 mV change (~1.3 %)
+    on_value:
+      then:
+        - lambda: |-
+            id(last_user_input_ms) = millis();
+            int p = (int)(x / 3.00f * 100.0f);
+            if (p < 1)   p = 1;
+            if (p > 100) p = 100;
+            id(last_brightness_pct) = p;
+            id(last_light_on) = true;
+        - homeassistant.service:
+            service: light.turn_on
+            data:
+              entity_id: ${light_entity}
+            variables:
+              pct: |-
+                int p = (int)(x / 3.00f * 100.0f);
+                if (p < 1)   p = 1;
+                if (p > 100) p = 100;
+                return p;
+            data_template:
+              brightness_pct: '{{ pct }}'
+              transition: '0.3'
+
+  # ----- Color-temperature pot — GPIO5 / ADC1_CH4 -----
+  - platform: adc
+    pin: GPIO5
+    id: pot_colortemp_v
+    name: "Color temp pot"
+    update_interval: 100ms
+    attenuation: 12db
+    filters:
+      - throttle: 100ms
+      - sliding_window_moving_average:
+          window_size: 4
+          send_every: 1
+      - delta: 0.04
+    on_value:
+      then:
+        - lambda: |-
+            id(last_user_input_ms) = millis();
+            int k = (int)(2200.0f + (x / 3.00f) * (6500.0f - 2200.0f));
+            if (k < 2200) k = 2200;
+            if (k > 6500) k = 6500;
+            id(last_color_temp_k) = k;
+            id(last_light_on) = true;
+        - homeassistant.service:
+            service: light.turn_on
+            data:
+              entity_id: ${light_entity}
+            variables:
+              kelvin: |-
+                int k = (int)(2200.0f + (x / 3.00f) * (6500.0f - 2200.0f));
+                if (k < 2200) k = 2200;
+                if (k > 6500) k = 6500;
+                return k;
+            data_template:
+              color_temp_kelvin: '{{ kelvin }}'
+              transition: '0.3'
+
+  # ----- Battery monitor -----
+  # Voltage divider: BAT+ -- 100kΩ -- (ADC) -- 47kΩ -- GND
+  # Divider ratio = 47 / (100 + 47) ≈ 0.3197
+  # 4× alkaline AA: ~6.4 V fresh, ~4.0 V flat → divided 2.05 V → 1.28 V
+  - platform: adc
+    pin: GPIO8
+    id: batt_v
+    name: "Battery voltage"
+    update_interval: 60s
+    attenuation: 12db
+    accuracy_decimals: 2
+    unit_of_measurement: "V"
+    filters:
+      - multiply: 3.1277       # 1 / 0.3197 — undo the divider
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+    on_value:
+      then:
+        - lambda: |-
+            // Piecewise curve tuned for 4× NiMH. NiMH sits flat around 5.0 V
+            // for most of its useful life and falls off the cliff near 4.4 V,
+            // so a linear map underestimates capacity through the middle.
+            // Reasonable for alkaline too (cells just get there from 6.4 V).
+            //
+            //   v ≥ 5.40 V  →  100 %        (freshly charged or alkaline > 80 %)
+            //   v = 5.10 V  →   75 %
+            //   v = 4.90 V  →   50 %
+            //   v = 4.70 V  →   25 %
+            //   v = 4.40 V  →   10 %
+            //   v ≤ 4.00 V  →    0 %        (replace / recharge)
+            float v = x;
+            int p;
+            if      (v >= 5.40f) p = 100;
+            else if (v >= 5.10f) p =  75 + (int)((v - 5.10f) / 0.30f *  25);
+            else if (v >= 4.90f) p =  50 + (int)((v - 4.90f) / 0.20f *  25);
+            else if (v >= 4.70f) p =  25 + (int)((v - 4.70f) / 0.20f *  25);
+            else if (v >= 4.40f) p =  10 + (int)((v - 4.40f) / 0.30f *  15);
+            else if (v >= 4.00f) p =       (int)((v - 4.00f) / 0.40f *  10);
+            else                 p =   0;
+            if (p < 0) p = 0; if (p > 100) p = 100;
+            id(last_battery_pct) = p;
+
+  - platform: template
+    name: "Battery"
+    id: batt_pct
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    update_interval: 60s
+    lambda: 'return (float)id(last_battery_pct);'
+    icon: mdi:battery
+
+  # ----- Diagnostics -----
+  - platform: wifi_signal
+    name: "${esphome_name} WiFi"
+    update_interval: ${device_sampling_time}
+    entity_category: diagnostic
+
+  - platform: uptime
+    id: ${device_internal_name}_uptime_sensor
+    name: "${esphome_name} Uptime sensor"
+    internal: true
+    update_interval: ${device_sampling_time}
+    on_raw_value:
+      then:
+        - text_sensor.template.publish:
+            id: ${device_internal_name}_uptime_human
+            state: !lambda |-
+              int s = round(id(${device_internal_name}_uptime_sensor).get_raw_state());
+              int d = s / 86400; s %= 86400;
+              int h = s / 3600;  s %= 3600;
+              int m = s / 60;    s %= 60;
+              return ((d?to_string(d)+"d ":"") + (h?to_string(h)+"h ":"") +
+                      (m?to_string(m)+"m ":"") + to_string(s) + "s").c_str();
+
+################################################################################
+# Text Sensors
+################################################################################
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "${esphome_name} IP"
+      id: ${device_internal_name}_ip
+      entity_category: diagnostic
+    ssid:
+      name: "${esphome_name} SSID"
+      id: ${device_internal_name}_ssid
+      entity_category: diagnostic
+    mac_address:
+      name: "${esphome_name} MAC"
+      id: ${device_internal_name}_mac
+      entity_category: diagnostic
+
+  - platform: version
+    name: "${esphome_name} ESPHome"
+    hide_timestamp: true
+    entity_category: diagnostic
+
+  - platform: template
+    name: "${esphome_name} Uptime"
+    id: ${device_internal_name}_uptime_human
+    icon: mdi:clock-start
+    entity_category: diagnostic
+
+################################################################################
+# Switches
+################################################################################
+switch:
+  - platform: restart
+    name: "${esphome_name} Restart"
+    id: device_restart
+
+  - platform: safe_mode
+    name: "${esphome_name} Safe Mode"
+    id: device_safe_mode
+
+################################################################################
+# Deep sleep
+# Wakes on EITHER button (GPIO6 or GPIO7) being pulled LOW (EXT1 wake).
+# Sleep is triggered by the idle timer below — not by run_duration — so we
+# stay awake as long as the user is interacting.
+################################################################################
+deep_sleep:
+  id: ds_1
+  esp32_ext1_wakeup:
+    pins:
+      - number: GPIO6
+        allow_other_uses: true   # also used as a binary_sensor input (Power button)
+      - number: GPIO7
+        allow_other_uses: true   # Random button
+      - number: GPIO2            # ADXL345 INT1 — motion wake (V1.1)
+        allow_other_uses: true   # also used by motion_int binary_sensor
+    mode: ANY_LOW                # all three lines are active-LOW
+
+################################################################################
+# Intervals
+#   1) one-shot kick that runs adxl345_init ~5 s after boot. We use this in
+#      place of the on_boot priority -10 trigger because the on_boot lambda
+#      logs are not appearing in the boot log (V1.0.6 boot log shows neither
+#      "API connected — remote ready" nor any [adxl345] lines, while interval
+#      logs DO show — see the existing "Idle 60s" log). Gated by the
+#      `adxl345_init_done` global so it only fires once per boot.
+#   2) idle timer — sleeps the remote 60 s after the LAST knob/button event.
+#      last_user_input_ms is updated by every on_press / on_value handler.
+################################################################################
+interval:
+  - interval: 1s
+    id: adxl_init_kick
+    then:
+      - if:
+          condition:
+            lambda: 'return !id(adxl345_init_done) && millis() > 5000;'
+          then:
+            - lambda: 'id(adxl345_init_done) = true;'
+            - logger.log:
+                level: INFO
+                tag: adxl345
+                format: "interval-kicked init at %u ms"
+                args: ['(unsigned)millis()']
+            - script.execute: adxl345_init
+
+  - interval: 5s
+    then:
+      - if:
+          condition:
+            lambda: 'return (millis() - id(last_user_input_ms)) > 60000;'
+          then:
+            - logger.log: "Idle 60s — animated sleep"
+            - script.execute: enter_sleep_animated
+
+################################################################################
+# Scripts
+################################################################################
+script:
+  # Snapshot the current brightness + colour temp into prev_*, then ask HA
+  # to apply a random rgb_color. The snapshot lets the long-press handler
+  # restore the previous look.
+  #
+  # NOTE: Philips Surimu is tunable-white only — if rgb_color does nothing
+  # on your panel, comment out the rgb_color block below and uncomment the
+  # color_temp_kelvin fallback at the end of this script.
+  - id: random_color
+    then:
+      # 1. Snapshot the current settings + roll the new RGB.
+      #    We store the RGB into globals so the display can show them next to "RND".
+      - lambda: |-
+          id(prev_brightness_pct) = id(last_brightness_pct);
+          id(prev_color_temp_k)   = id(last_color_temp_k);
+          id(random_active)       = true;
+          id(last_random_r)       = (int)(random_uint32() % 256);
+          id(last_random_g)       = (int)(random_uint32() % 256);
+          id(last_random_b)       = (int)(random_uint32() % 256);
+      # 2. Send the rolled values to HA.
+      - homeassistant.service:
+          service: light.turn_on
+          data:
+            entity_id: ${light_entity}
+          variables:
+            r: 'return id(last_random_r);'
+            g: 'return id(last_random_g);'
+            b: 'return id(last_random_b);'
+          data_template:
+            rgb_color: '[{{ r }}, {{ g }}, {{ b }}]'
+            transition: '0.5'
+
+      # ---- Tunable-white fallback (uncomment if rgb_color is ignored) ----
+      # - homeassistant.service:
+      #     service: light.turn_on
+      #     data:
+      #       entity_id: ${light_entity}
+      #     variables:
+      #       k: 'return 2200 + (random_uint32() % (6500 - 2200));'
+      #     data_template:
+      #       color_temp_kelvin: '{{ k }}'
+      #       transition: '0.5'
+
+  # Restore the snapshot taken by random_color.
+  # If we were never in random mode, do nothing (avoids surprising the user).
+  - id: restore_previous
+    then:
+      - if:
+          condition:
+            lambda: 'return id(random_active);'
+          then:
+            - logger.log:
+                level: INFO
+                format: "Restoring previous: %d%% / %d K"
+                args: [ 'id(prev_brightness_pct)', 'id(prev_color_temp_k)' ]
+            - homeassistant.service:
+                service: light.turn_on
+                data:
+                  entity_id: ${light_entity}
+                variables:
+                  pct: 'return id(prev_brightness_pct);'
+                  k:   'return id(prev_color_temp_k);'
+                data_template:
+                  brightness_pct:    '{{ pct }}'
+                  color_temp_kelvin: '{{ k }}'
+                  transition: '0.5'
+            - lambda: |-
+                id(last_brightness_pct) = id(prev_brightness_pct);
+                id(last_color_temp_k)   = id(prev_color_temp_k);
+                id(random_active)       = false;
+
+  # ADXL345 motion sensor — one-shot init at boot.
+  # Configures the chip to assert INT1 active-LOW when the device experiences
+  # motion above the THRESH_ACT threshold. The wake pin (GPIO2) and deep_sleep
+  # ext1_wakeup pick this up directly.
+  #
+  # SENSITIVITY DIAL: register 0x24 (THRESH_ACT). 62.5 mg per LSB.
+  #   0x04 → 250 mg   (very sensitive — wakes on light tap)
+  #   0x08 → 500 mg   (firm pickup)
+  #   0x10 → 1.0 g    ← chosen: deliberate lift, ignores desk vibration
+  #   0x18 → 1.5 g    (real shake)
+  - id: adxl345_init
+    then:
+      # First marker — proves the script is being entered at all.
+      - logger.log:
+          level: INFO
+          tag: adxl345
+          format: "init script entered"
+      - lambda: |-
+          auto* bus = id(bus_a);
+          const uint8_t addr = 0x53;
+          uint8_t reg, val;
+
+          // Read DEVID register (0x00) — must return 0xE5.
+          reg = 0x00;
+          auto e1 = bus->write(addr, &reg, 1, false);
+          auto e2 = bus->read(addr, &val, 1);
+          ESP_LOGI("adxl345", "DEVID read err1=%d err2=%d val=0x%02X", (int)e1, (int)e2, val);
+          if (val != 0xE5) {
+            ESP_LOGW("adxl345", "DEVID mismatch — aborting init");
+            return;
+          }
+
+          uint8_t buf[2];
+          buf[0] = 0x2C; buf[1] = 0x07; bus->write(addr, buf, 2);  // BW_RATE 12.5 Hz
+          buf[0] = 0x31; buf[1] = 0x28; bus->write(addr, buf, 2);  // DATA_FORMAT INT_INVERT=1
+          buf[0] = 0x24; buf[1] = 0x10; bus->write(addr, buf, 2);  // THRESH_ACT ~1 g
+          // ACT_INACT_CTL: bit 7 = 1 → AC-coupled activity (gravity removed),
+          //                bits 6/5/4 = 1 → all 3 axes participate.
+          // V1.1 had this as 0x70 (bit 7 = 0 = DC-coupled). With DC-coupling
+          // and a 1 g threshold, the constant Z-axis gravity sat right at the
+          // trigger point and held INT1 LOW continuously → the chip woke
+          // immediately every time deep_sleep armed. 0xF0 fixes that.
+          buf[0] = 0x27; buf[1] = 0xF0; bus->write(addr, buf, 2);  // ACT_INACT_CTL all axes AC
+          buf[0] = 0x2F; buf[1] = 0x00; bus->write(addr, buf, 2);  // INT_MAP -> INT1
+          buf[0] = 0x2E; buf[1] = 0x10; bus->write(addr, buf, 2);  // INT_ENABLE activity
+          buf[0] = 0x2D; buf[1] = 0x08; bus->write(addr, buf, 2);  // POWER_CTL Measure=1
+
+          // Verify INT_INVERT actually took
+          reg = 0x31;
+          bus->write(addr, &reg, 1, false);
+          bus->read(addr, &val, 1);
+          ESP_LOGI("adxl345", "DATA_FORMAT readback = 0x%02X (expected 0x28)", val);
+
+          // Verify ACT_INACT_CTL — confirms the AC-couple bit took.
+          reg = 0x27;
+          bus->write(addr, &reg, 1, false);
+          bus->read(addr, &val, 1);
+          ESP_LOGI("adxl345", "ACT_INACT_CTL readback = 0x%02X (expected 0xF0)", val);
+
+          // Clear any latched interrupt
+          reg = 0x30;
+          bus->write(addr, &reg, 1, false);
+          uint8_t dummy;
+          bus->read(addr, &dummy, 1);
+          ESP_LOGI("adxl345", "Init complete (1 g threshold, active-LOW INT)");
+
+  # Show a "going to sleep" screen for ~2 s, persist state, then sleep.
+  # mode: single — pressing the button while already animating won't queue
+  # a second invocation.
+  - id: enter_sleep_animated
+    mode: single
+    then:
+      - lambda: 'id(sleeping_soon) = true;'
+      - component.update: round_lcd     # paint the goodbye screen now
+      - delay: 2s                       # let the user see "going to sleep" for 2 s
+      - script.execute: save_state
+      # Belt-and-braces (V1.1.1): just before arming deep_sleep, read the
+      # ADXL345 INT_SOURCE register so any latched activity bit from the
+      # last 2 s of holding the device is cleared. With AC-couple active
+      # and the user putting the remote down again before the 2 s splash
+      # ends, the line should already be HIGH — but a stray bump while the
+      # splash is showing would otherwise re-arm motion right as we sleep.
+      - lambda: |-
+          auto* bus = id(bus_a);
+          uint8_t reg = 0x30, s;
+          bus->write(0x53, &reg, 1, false);
+          bus->read(0x53, &s, 1);
+          ESP_LOGI("adxl345", "pre-sleep INT_SOURCE = 0x%02X", s);
+      - deep_sleep.enter: ds_1
+
+  # Touch every persisted global so ESPHome flushes the latest values to NVS
+  # before we drop into deep sleep. Cheap; flash is only written when changed.
+  - id: save_state
+    then:
+      - lambda: |-
+          id(last_brightness_pct) = id(last_brightness_pct);
+          id(last_color_temp_k)   = id(last_color_temp_k);
+          id(last_light_on)       = id(last_light_on);
+          id(last_battery_pct)    = id(last_battery_pct);
+      - logger.log:
+          level: INFO
+          format: "save_state — %d%%, %d K, on=%d, batt=%d%%"
+          args: [ 'id(last_brightness_pct)', 'id(last_color_temp_k)',
+                  'id(last_light_on)', 'id(last_battery_pct)' ]

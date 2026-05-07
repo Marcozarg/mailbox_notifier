@@ -1,0 +1,145 @@
+# V1.0.0 — 2026-05-03 — Mailbox dashboard tab for V3 receiver entities
+#
+# Drop-in replacement for the old `HA mailbox-page part.txt`. Targets the
+# entities that mailbox_receiver_V3.ino auto-creates via MQTT discovery
+# (Settings → Devices & Services → MQTT → "Mailbox sensor" device).
+#
+# How to apply:
+#   1. Settings → Dashboards → pick your overview dashboard → 3-dot menu →
+#      "Edit Dashboard" → 3-dot menu again → "Raw configuration editor".
+#   2. Find your existing `- title: mailbox` block (was sourced from
+#      `HA mailbox-page part.txt`). Replace it with the block below.
+#   3. Save. The page reloads with the new entities.
+#
+# All Finnish labels mirror the existing Pushover convention. Indent style
+# matches the original file (2-space inside lists).
+
+- title: mailbox
+  path: mailbox
+  icon: mdi:mailbox
+  visible:
+    - user: 4b8c7643cc224a6c969737120cc523e0
+  cards:
+    # ─────────────────────────────────────────────────────────────────────
+    # 1. Headline state — big mailbox button. Tap = clear "MAIL" state.
+    #    Tap fires the same MQTT publish the V2_real button used, so the
+    #    receiver's existing handler clears the state for us.
+    # ─────────────────────────────────────────────────────────────────────
+    - type: button
+      entity: binary_sensor.mailbox_state
+      name: Postilaatikko
+      icon: mdi:mailbox
+      icon_height: 80px
+      show_state: true
+      state_color: true
+      tap_action:
+        action: call-service
+        service: mqtt.publish
+        data:
+          qos: 1
+          retain: false
+          topic: mailboxstatus/switch
+          payload: 'OFF'
+      hold_action:
+        action: more-info
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 2. "Mail just arrived!" banner — only renders while state is on.
+    # ─────────────────────────────────────────────────────────────────────
+    - type: conditional
+      conditions:
+        - entity: binary_sensor.mailbox_state
+          state: 'on'
+      card:
+        type: markdown
+        content: >
+          ## 📬 Postia laatikossa!
+
+
+          Käy hakemassa posti ja paina yllä olevaa nappia kun olet
+          tyhjentänyt laatikon.
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 3. Environment in the mailbox — BME280 readings + lid state.
+    # ─────────────────────────────────────────────────────────────────────
+    - type: entities
+      title: Ympäristö
+      show_header_toggle: false
+      entities:
+        - entity: sensor.mailbox_temp
+          name: Lämpötila
+          icon: mdi:thermometer
+        - entity: sensor.mailbox_humidity
+          name: Kosteus
+          icon: mdi:water-percent
+        - entity: sensor.mailbox_pressure
+          name: Ilmanpaine
+          icon: mdi:gauge
+        - entity: binary_sensor.mailbox_lid
+          name: Luukku
+          icon: mdi:mailbox-open-outline
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 4. Power & connectivity — at-a-glance health.
+    # ─────────────────────────────────────────────────────────────────────
+    - type: entities
+      title: Akku ja yhteys
+      show_header_toggle: false
+      entities:
+        - entity: sensor.mailbox_battery_percent
+          name: Akun varaus
+          icon: mdi:battery
+        - entity: sensor.mailbox_battery_voltage
+          name: Akun jännite
+        - entity: binary_sensor.mailbox_sender_alive
+          name: Lähetin online
+          icon: mdi:radio-tower
+        - entity: binary_sensor.mailbox_receiver_online
+          name: Vastaanotin online
+          icon: mdi:wifi
+        - entity: sensor.mailbox_last_seen
+          name: Viimeisin paketti
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 5. History — last 24 h of conditions in the mailbox.
+    # ─────────────────────────────────────────────────────────────────────
+    - type: history-graph
+      title: Lämpötila ja kosteus (24 h)
+      hours_to_show: 24
+      entities:
+        - entity: sensor.mailbox_temp
+        - entity: sensor.mailbox_humidity
+
+    - type: history-graph
+      title: Akku (7 d)
+      hours_to_show: 168
+      entities:
+        - entity: sensor.mailbox_battery_percent
+        - entity: sensor.mailbox_battery_voltage
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 6. Diagnostics — link quality, packet bookkeeping, receiver health.
+    #    Inside an entities card with the entity_category=diagnostic items
+    #    HA hides by default; here we expose them explicitly so they're
+    #    one click away when troubleshooting.
+    # ─────────────────────────────────────────────────────────────────────
+    - type: entities
+      title: Diagnostiikka
+      show_header_toggle: false
+      entities:
+        - entity: sensor.mailbox_rssi
+          name: RSSI (linkki)
+        - entity: sensor.mailbox_snr
+          name: SNR (linkki)
+        - entity: sensor.mailbox_msg_count
+          name: Viestilaskuri
+        - entity: sensor.mailbox_last_packet_type
+          name: Viimeisin pakettityyppi
+        - entity: sensor.mailbox_boot_count
+          name: Lähettimen käynnistyksiä
+        - entity: sensor.mailbox_boot_reason
+          name: Lähettimen viim. boot-syy
+        - entity: sensor.mailbox_receiver_wifi_rssi
+          name: Vastaanottimen WiFi-signaali
+        - entity: sensor.mailbox_receiver_uptime
+          name: Vastaanottimen käyntiaika
