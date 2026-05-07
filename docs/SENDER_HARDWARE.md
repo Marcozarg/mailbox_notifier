@@ -102,7 +102,7 @@ If you want to bench-prototype before committing to a mounting position, use a s
 
 **The right test before mounting:** put the reed and the magnet together on a desk and verify by ohm-meter that you can reliably trigger reed-OPEN ↔ reed-CLOSED transitions at the distance and orientation you'll have in the actual mailbox. NO reeds typically close at ~10–20 mm from a small neodymium magnet; pull-back range is similar.
 
-**Reed type confirmed by Marko:** NO. Mounting is the responsibility of physical install — firmware assumes inverted-mount semantics (reed CLOSED = lid OPEN = wake event).
+**Reed type confirmed NO. Mounting is the responsibility of physical install — firmware assumes inverted-mount semantics (reed CLOSED = lid OPEN = wake event).
 
 ### Blue LED (debug — wired permanently, firmware-gated, blinks once per LoRa TX)
 
@@ -184,6 +184,4 @@ Recommended order so the board is debuggable at each step:
 - **Workflow & testing phases:** `WORKFLOW_AND_TESTING.md` (Phase 2 covers the BME280 + reed bench tests).
 - **Locked design decisions:** captured in agent memory (`project_decisions.md`).
 
----
 
-*Sender firmware is `mailbox_sender_V3.ino` in `firmware/mailbox_sender_V3/`. (Renamed 2026-05-07 from the longer `adafruit_Lora_32u4_Mailbox_Sender_V3.ino`.)*

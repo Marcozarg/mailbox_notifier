@@ -4,8 +4,6 @@
 
 Planning document for the Heltec WiFi LoRa 32 V3 receiver firmware. Target file: `O:\Claude\Mailbox notifier\mailbox_receiver_V3.ino` (project root). Existing baseline: `Old Receiver sketches/mailbox_receiver_V2_real.ino` (works, but minimal).
 
-This is a planning document only — no `.ino` files will be created until Marko explicitly says "write the code."
-
 ---
 
 ## 1. The data the sender CAN send (full menu)
@@ -278,10 +276,6 @@ HA can use the `type` field to fire different alerts: `0x01` → push notificati
 
 ---
 
-**Status:** all design decisions resolved. Next step is to write `mailbox_receiver_V3.ino` itself — but per the plan-first project rule, that only happens when Marko explicitly says "write it."
-
----
-
 ## 9. Notification flow — Node-RED → Pushover → iPhone
 
 The existing Node-RED flow (`Node-Red_code.txt`) is wired to the **wrong MQTT topic** — it subscribes to `arduino/mailbox/switch`, which only the abandoned `Mailbox_receiver.ino` published to. The V2_real receiver publishes to `mailboxstatus/switch`. So **the Pushover notifications haven't actually been firing** when V2_real was running. Worth re-flashing the topic in the Node-RED node after V3 is up.
@@ -408,7 +402,7 @@ Adding to §7 / §8:
 
 | # | Question | Choice |
 |---|---|---|
-| 8 | Reed lockout window | **60 s** (Marko) |
+| 8 | Reed lockout window | **60 s** |
 | 9 | Lockout implementation | **WDT-sleep through it** (Style A) — saves ~270 mAs per event vs awake-poll |
 | 10 | Notification deduplication | **All three layers** — sender lockout + receiver state-already-MAIL guard + Node-RED Trigger node |
 | 11 | Pushover priorities | Mail event = priority 0 (siren), all alerts (low batt, offline) = priority 1 (falling) |

@@ -7,7 +7,7 @@ End-to-end plan from "what's on the bench today" to "the mailbox pings my phone 
 The phases assume the hardware shown in the project photos:
 - **Sender:** Adafruit Feather 32u4 LoRa (RFM95, SX1276, 868 MHz) + 2000 mAh LiPo + reed switch + DHT22.
 - **Receiver:** Heltec WiFi LoRa 32 V3 (ESP32-S3 + **SX1262** + OLED) on USB power in the house.
-- **Backend:** Home Assistant on `192.168.15.0/24`, Mosquitto MQTT broker at `192.168.15.100`.
+- **Backend:** Home Assistant on `192.168.xxx.xxx`, Mosquitto MQTT broker at `192.168.xxx.xxx`.
 
 ---
 
@@ -92,7 +92,7 @@ Work items:
 **Entry condition:** Phase 3 passed; receiver still printing parsed packets to Serial/OLED.
 
 Work items:
-1. WiFi connect with `WiFiManager` (or hard-coded from `arduino_secrets.h`), then MQTT connect to `192.168.15.100:1883` with `MQTT_User`. Maintain reconnect loop.
+1. WiFi connect with `WiFiManager` (or hard-coded from `arduino_secrets.h`), then MQTT connect to `192.168.xxx.xxx:1883` with `MQTT_User`. Maintain reconnect loop.
 2. On boot, publish **MQTT discovery configs** to `homeassistant/sensor/mailbox_temp/config`, `_humidity`, `_lipo`, `_msg`, `_rssi`, `_snr`, and `homeassistant/binary_sensor/mailbox_state/config` (device_class: `occupancy` or `door`). Each payload includes `state_topic`, `unit_of_measurement`, `device_class`, and `device` block so they all group under one HA device. Discovery happens once per boot — HA caches.
 3. On received LoRa packet, publish to `mailbox/temp`, `mailbox/humidity`, `mailbox/lipo`, `mailbox/msg`, `mailbox/rssi`, `mailbox/snr`. For the reed-trigger packet, also publish `mailbox/state = MAIL` (retained).
 4. Subscribe to `mailbox/state/set` — the existing HA dashboard button already publishes here in spirit; map it so a press from HA publishes `EMPTY` to `mailbox/state` (retained), clearing the indicator.

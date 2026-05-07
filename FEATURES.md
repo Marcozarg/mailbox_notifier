@@ -173,7 +173,6 @@ Receiver also publishes the V2_real-shaped topics so the original HA `configurat
 - `mailboxstatus/switch` → `"ON"` on each reed-event state-transition (not retained).
 - `mailboxstatus/feather` → JSON `{"temp", "humid", "lipo" (volts), "msgcount", "rssi", "snr"}` on every received packet.
 
-To be removed in V3.1 once Marko has migrated dashboards / automations.
 
 ### 6.3 Lovelace dashboard
 
@@ -254,11 +253,7 @@ From `RECEIVER_V3_PLAN.md` §7 / §8 and `project_decisions.md` in agent memory:
 |---|---|
 | `mailbox_receiver_V3.ino` | Receiver firmware (Heltec V3) |
 | `mailbox_sender_V3.ino` | Sender firmware (Feather 32u4 LoRa) |
-| `arduino_secrets.h` | WiFi/MQTT credentials — never commit |
 | `SENDER_HARDWARE.md` | Canonical sender pinout + wiring reference |
 | `RECEIVER_V3_PLAN.md` | Design plan — packet format, MQTT topics, OLED layout, decisions log |
 | `WORKFLOW_AND_TESTING.md` | Phased build/test plan |
-| `Home Assistant configuration/HA mailbox-page V3.yaml` | Replacement Lovelace tab for V3 entities |
-| `Node-Red_code.txt` | Existing Pushover flow (needs topic update to `mailbox/state`) |
-| `Old Receiver sketches/` | Archived V2_real and earlier drafts |
-| `compile errors/` | Saved error logs from past compile failures |
+

@@ -1,4 +1,5 @@
-# Mailbox Notifier
+# Mailbox Notifier CLAUDE-project
+---------------------------------
 
 LoRa-based mailbox sensor that pings Home Assistant (and your phone via Pushover) when the postman opens your mailbox lid. Sender lives 50 m away in the mailbox, runs on a 2000 mAh LiPo for ~150 days. Receiver bridges LoRa packets to MQTT and Home Assistant.
 
