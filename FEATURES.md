@@ -36,7 +36,7 @@ This is the canonical "what the system does" reference. When in doubt about an e
 
 - **Board:** Heltec WiFi LoRa 32 V3 (HTIT-WB32LA V3.2 — ESP32-S3 + SX1262 + 0.96" OLED + on-board user button + battery measurement).
 - **Power:** USB, always on, mounted on a window.
-- **Network:** WiFi `skynetIOT`, MQTT broker `192.168.15.100:1883` (Mosquitto, user `MQTT_User`).
+- **Network:** WiFi `skynetIOT`, MQTT broker `192.168.xxx.xxx:1883` (Mosquitto, user `MQTT_User`).
 - **Antenna:** factory wire pigtail.
 
 ---
