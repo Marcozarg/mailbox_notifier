@@ -35,15 +35,6 @@ Field-tested at -58 dBm RSSI / +11 dB SNR through one large tree at 50 m.
 │   ├── SENDER_HARDWARE.md                         Sender pinout + wiring reference
 │   ├── RECEIVER_V3_PLAN.md                        Receiver design plan + locked decisions
 │   └── WORKFLOW_AND_TESTING.md                    Phased build & test plan
-├── home_assistant/
-│   ├── HA_mailbox_dashboard.yaml                  Lovelace tab for the V3 entities
-│   └── nodered_pushover_flow.json                 Node-RED flow for Pushover notifications
-├── images/
-│   ├── circuit_pictures/                          Bench photos
-│   └── legacy_dashboard_screenshot.png            HA dashboard screenshot
-├── archive/
-│   ├── old_receiver_sketches/                     Earlier drafts (kept for reference)
-│   └── legacy_HA_dashboard.txt                    Pre-V3 dashboard YAML
 ├── FEATURES.md                                    Canonical feature list
 ├── LICENSE                                        MIT
 └── README.md                                      This file
