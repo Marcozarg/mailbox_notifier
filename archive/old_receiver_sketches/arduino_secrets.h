@@ -1,5 +1,0 @@
-#define SECRET_SSID "skynetIOT"
-#define SECRET_PASS "hiiveekamala11"
-#define MQTTUSER "MQTT_User"
-#define MQTTPASS "EGh7g3vWkxkrAHe"
-#define MQTTBROKER "192.168.15.100"
