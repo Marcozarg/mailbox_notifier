@@ -34,7 +34,7 @@ Each of these has a default if you don't want to think about it; the default is 
 | Trigger semantics | "Mail arrived" = lid opened, OR "Mail arrived" = lid opened AND lid closed again | **Lid opened** (single edge) for V1; closure-debounce in V2. |
 | Notification cadence in HA | Single ping per opening, OR sticky "Mail waiting" until the user clears it | **Sticky** — the receiver publishes `mailbox/state = MAIL`, the HA mailbox button you already have publishes `mailbox/state = EMPTY` to clear. |
 | Discovery | Hand-write HA YAML sensors, OR publish MQTT discovery from the receiver | **MQTT discovery** — entities self-create, you'll never need to hand-edit `configuration.yaml` again. |
-| Sender deep sleep target | "Wake on reed only" (lowest power) vs "Wake on reed + heartbeat every N hours" (lets HA detect a dead sender) | **Reed + 6 h heartbeat** — adds ~4 TX/day, negligible vs reed event but gives you "low battery" visibility. |
+| Sender deep sleep target | "Wake on reed only" (lowest power) vs "Wake on reed + heartbeat every N hours" (lets HA detect a dead sender) | **Reed + 48 h heartbeat** (boosted to 6 h when `vbat < 3.6 V`). Originally planned 6 h; relaxed to 48 h after Phase 5 to halve heartbeat TX cost. Low-batt boost preserves dead-battery visibility. |
 | Sender LoRa params | Match existing (SF9, BW 250 kHz, +20 dBm) vs tighter range/lower power | Keep current — there's plenty of link budget at 50 m and SF9/250k gives ~200 ms airtime. |
 
 If any of these defaults don't match what you want, change them now. Everything downstream depends on them.
@@ -73,14 +73,14 @@ Work items:
 
 Work items:
 1. Re-enable `SLEEP_MODE_PWR_DOWN` on the sender. **Fix the wake polarity** (`LOW`, not `HIGH` — see Known Issues #4). Disable ADC (`ADCSRA &= ~_BV(ADEN);`) before sleeping, re-enable after wake — saves ~200 µA.
-2. Add a 6-hour heartbeat using the watchdog timer (`WDTCSR` 8 s ticks → counter, see "AVR sleep with WDT wake" pattern). On heartbeat, send a `reason=0x02` packet so the receiver sees the sender is alive even if no mail arrives.
+2. Add a heartbeat using the watchdog timer. Final implementation (V1.0.9): **32 s logical ticks** (4× chained `LowPower.powerDown(SLEEP_8S, …)` since the 32u4 WDT prescaler caps at 8 s) → counter → **48 h normal cadence**, boosted to **6 h** when `vbat < 3.6 V`. On heartbeat, send a `reason=0x02` (or `0x03` low-batt) packet so the receiver sees the sender is alive even if no mail arrives.
 3. Move LoRa `begin()` into `setup()` only; on wake, just `LoRa.idle()` → `beginPacket()` → … → `LoRa.sleep()`.
 4. Battery measurement: existing A9 divider math is correct for Adafruit Feather (`measuredvbat *= 2 * 3.3 / 1024.0`). Sample 8× and average — 32u4 ADC noise is real.
 
 **Acceptance test (Phase 3):**
 - With reed open and idle: **measured current ≤ 1 mA average** (LiPo charger, 32u4 sleeping, RFM95 in `LoRa.sleep()`). Aim is ~300–500 µA realistically — the 32u4's USB regulator is the main offender.
 - Reed event from sleep produces a valid packet within 500 ms.
-- Heartbeat fires within ±5 % of 6 h (8 s × 2700 WDT ticks).
+- Heartbeat fires within ±5 % of 48 h (32 s logical ticks × 5400) in normal mode, or 6 h (× 675) in low-batt mode.
 - Battery voltage reading matches multimeter ±50 mV across a 4.0 V → 3.5 V battery range.
 
 > **Reality check on battery life:** 2000 mAh LiPo, average draw 500 µA → ~167 days. Average draw 2 mA (if the 32u4 USB block leaks more than expected) → ~42 days. If you measure >5 mA in sleep, something is wrong — most likely the DHT22 (which idles at ~0.5 mA constantly) or the LiPo charger LED. Power-gate the DHT22 from a GPIO if needed.
@@ -94,7 +94,7 @@ Work items:
 Work items:
 1. WiFi connect with `WiFiManager` (or hard-coded from `arduino_secrets.h`), then MQTT connect to `192.168.xxx.xxx:1883` with `MQTT_User`. Maintain reconnect loop.
 2. On boot, publish **MQTT discovery configs** to `homeassistant/sensor/mailbox_temp/config`, `_humidity`, `_lipo`, `_msg`, `_rssi`, `_snr`, and `homeassistant/binary_sensor/mailbox_state/config` (device_class: `occupancy` or `door`). Each payload includes `state_topic`, `unit_of_measurement`, `device_class`, and `device` block so they all group under one HA device. Discovery happens once per boot — HA caches.
-3. On received LoRa packet, publish to `mailbox/temp`, `mailbox/humidity`, `mailbox/lipo`, `mailbox/msg`, `mailbox/rssi`, `mailbox/snr`. For the reed-trigger packet, also publish `mailbox/state = MAIL` (retained).
+3. On received LoRa packet, publish to `mailbox/sender/temperature`, `mailbox/sender/humidity`, `mailbox/sender/battery_voltage`, `mailbox/sender/packet_seq`, `mailbox/receiver/rssi`, `mailbox/receiver/snr` (V1.1.0+ topic tree; pre-V1.1.0 the receiver used flat `mailbox/temp` etc.). For the reed-trigger packet, also publish `mailbox/state = MAIL` (retained).
 4. Subscribe to `mailbox/state/set` — the existing HA dashboard button already publishes here in spirit; map it so a press from HA publishes `EMPTY` to `mailbox/state` (retained), clearing the indicator.
 5. OLED layout: top line `WiFi/MQTT` status icons, big middle "MAIL" / "—", bottom line last packet timestamp + RSSI/SNR.
 
@@ -154,7 +154,7 @@ Work items:
 | T-PARSE | Packet decode | Serial / OLED | Temp ±1 °C, humidity ±5 %, vbat ±50 mV |
 | T-WAKE | Reed wake | Magnet + Serial | One TX per magnet-remove, ≤ 500 ms latency |
 | T-SLEEP | Sleep current | Multimeter (µA) | Idle avg ≤ 1 mA, ideally < 500 µA |
-| T-HEART | Heartbeat | 24 h log | One packet every 6 h ± 18 min |
+| T-HEART | Heartbeat | 1 week log | One packet every 48 h ± 5 h (or every 6 h ± 36 min when vbat < 3.6 V) |
 | T-DISC | MQTT discovery | HA "Devices" page | All 7 entities present, grouped, populated |
 | T-CLEAR | State clear | HA dashboard button | `binary_sensor.mailbox_state = off` within 1 s |
 | T-RANGE | Range in place | Walk test, RSSI log | ≤ 1 % loss, ≥ 15 dB margin over sensitivity |

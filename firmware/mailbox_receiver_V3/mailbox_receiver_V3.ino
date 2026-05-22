@@ -1,4 +1,143 @@
-// V1.0.5 — 2026-05-05 — Mailbox receiver V3 (Heltec WiFi LoRa 32 V3, RadioLib via heltec_unofficial)
+// V1.2.1 — 2026-05-22 — Mailbox receiver V3 (Heltec WiFi LoRa 32 V3, RadioLib via heltec_unofficial)
+//
+// V1.2.1 changes:
+//   • `mailbox_sender_last_packet_type` now publishes a human-readable label
+//     ("mail" / "heartbeat" / "heartbeat (low batt)" / "boot") instead of the
+//     raw integer 1/2/3/4. Implemented in publishOnePacket via a small
+//     packetTypeLabel() helper. No wire-format change — the on-air `type=`
+//     field is still numeric; this is purely a display improvement.
+//   • Companion sender change: V1.1.0 now includes `&br=` (boot reason) in
+//     every packet, not just boot packets. Receiver code unchanged for that —
+//     the existing `getKv(payload, "br")` + retained publish path picks the
+//     value up the moment any V1.1.0 packet arrives. Net effect: HA stops
+//     showing "Unknown" for boot reason after the first V1.1.0 sender packet.
+//
+// V1.2.0 changes (BREAKING — entity_id slugs cleaned up):
+//   • Fixed the "Mailbox sender battery" entity_id ending up as
+//     `sensor.mailbox_mailbox_sender_battery` (doubled "mailbox_") and the
+//     same doubling on all 17 sister entities. Root cause: modern HA composes
+//     entity_id as `<device_slug>_<object_id_slug>` and the friendly name as
+//     `<device_name> <entity_name>`. Our V1.1.0 discovery passed
+//     name="Mailbox sender battery" + object_id="mailbox_sender_battery" +
+//     device="Mailbox", so HA stripped "Mailbox" for display but still
+//     prepended the device slug for the entity_id, producing the doubled form.
+//   • Fix: drop the "Mailbox" prefix from every entity's `name` field AND
+//     the "mailbox_" prefix from every entity's `unique_id` / `object_id`.
+//     HA now composes:
+//        device "Mailbox" + name "Sender battery"        → display "Mailbox > Sender battery"
+//        device-slug "mailbox" + object_id "sender_battery" → entity_id `sensor.mailbox_sender_battery`
+//     Clean on both ends, no doubling.
+//   • Because unique_id changed for all 18 entities, the V1.1.0/V1.1.1
+//     entities will go "Unavailable" in HA after this flash. One more bulk
+//     delete pass under Settings → Devices & services → MQTT → entities
+//     (filter "unavailable", search "mailbox_mailbox") cleans them up.
+//   • V1.x bump (UX polish, per project versioning rules — see V1.0.0 notes).
+//
+// V1.1.1 changes:
+//   • BUG FIX — ArduinoOTA upload was dying at ~50 % with WinError 10054
+//     ("connection forcibly closed by remote host") on first attempt. Root
+//     cause: ArduinoOTA.handle() blocks the main loop() while streaming the
+//     binary and erasing 4 KB flash sectors, which means the 30 s task
+//     watchdog (kicked from loop()) trips mid-upload and hardware-resets
+//     the ESP32. Fix: register `onStart` / `onProgress` / `onEnd` / `onError`
+//     callbacks that call `esp_task_wdt_reset()`, so the WDT stays armed at
+//     30 s for real hangs but gets steadily kicked during the upload.
+//   • Adjacent fix — `clearDio1Action()` on OTA start so RadioLib's DIO1
+//     ISR can't fire while flash is mid-erase (SPI race risk). On
+//     `onError` we re-arm the LoRa receive so a failed upload doesn't leave
+//     the receiver LoRa-deaf until reboot. Successful upload reboots the
+//     chip anyway, so no restore needed on the happy path.
+//   • UX — OLED now shows live `OTA xx%` during the upload (replaces the
+//     V1.1.0 static "OTA UPDATE / do not power off" splash), so progress is
+//     visible on the device side too.
+//   • Doc — README clarified: leave the Arduino-IDE password field blank on
+//     network upload. The receiver has no OTA password (per locked
+//     decision); whatever you type is ignored, but typing a space caused
+//     confusion the first time around.
+//
+// V1.1.0 changes (BREAKING — entity_ids + MQTT topics restructured):
+//   • Device card name: "Mailbox sensor" → "Mailbox" (identifier "mailbox_sensor_v3"
+//     kept stable so HA keeps the device card grouping under one card).
+//   • All entity_ids reorganised into a strict sender_/receiver_ scheme so the
+//     origin of each value is obvious at a glance in HA:
+//       Sender data (BME280, LiPo, packet bookkeeping)
+//         mailbox_temp                  → mailbox_sender_temperature
+//         mailbox_humidity              → mailbox_sender_humidity
+//         mailbox_pressure              → mailbox_sender_pressure
+//         mailbox_battery_voltage       → mailbox_sender_battery_voltage
+//         mailbox_battery_percent       → mailbox_sender_battery
+//         mailbox_msg_count             → mailbox_sender_packet_seq
+//         mailbox_last_packet_type      → mailbox_sender_last_packet_type
+//         mailbox_boot_count            → mailbox_sender_boot_count
+//         mailbox_boot_reason           → mailbox_sender_boot_reason
+//         mailbox_sender_alive          unchanged
+//         mailbox_sender_version        unchanged
+//       Receiver-measured (link quality, receiver self-diagnostics)
+//         mailbox_rssi                  → mailbox_receiver_rssi
+//         mailbox_snr                   → mailbox_receiver_snr
+//         mailbox_last_seen             → mailbox_receiver_last_seen
+//         mailbox_receiver_online       unchanged
+//         mailbox_receiver_wifi_rssi    unchanged
+//         mailbox_receiver_uptime       unchanged
+//       Headline (device-level)
+//         mailbox_state                 unchanged
+//     Friendly names follow the entity_ids ("Mailbox sender temperature" etc.).
+//   • Underlying MQTT topics also restructured for symmetry — all sender-derived
+//     values now under `mailbox/sender/...`, all receiver-measured under
+//     `mailbox/receiver/...`, with `mailbox/state` as the headline. The old
+//     `mailbox/temp`, `mailbox/rssi`, `mailbox/sender_fw`, etc. topics are GONE
+//     (no aliasing kept — clean break per the Q3 decision).
+//   • Legacy V2_real compatibility publishes REMOVED (per Q3-b decision):
+//       - No more `mailboxstatus/switch=ON` on reed events
+//       - No more `mailboxstatus/feather=<JSON>` blob
+//       - No more subscription to `mailboxstatus/switch` for the clear command.
+//     **HA dashboard impact:** the "Mailbox" tap-action must now publish
+//     `EMPTY` (retained) directly to `mailbox/state` to clear the sticky
+//     state. The receiver's existing T_STATE subscription handles this via the
+//     V1.0.6 Fix B path (broker-driven sync), so behaviour is identical from
+//     the user's POV.
+//   • V1.x major bump (per project versioning convention) because this is a
+//     behaviour/UX change, not a bug fix. Old entities will become orphaned in
+//     HA — delete manually from Settings → Devices & services → MQTT (Q2-b).
+//
+// V1.0.8 changes:
+//   • `mailbox_receiver_uptime` switched from seconds to days (2 decimals).
+//     Discovery unit "s" → "d"; publishDiagnostics now publishes
+//     `millis() / 86400000.0` formatted with two decimal places. HA card now
+//     reads e.g. "1.34 d" instead of "115320 s". `mailbox_last_seen` left
+//     untouched per user request.
+//   • Receiver firmware version moved off the boot splash and onto the main
+//     OLED screen, right-justified on the top status row. Always visible at
+//     a glance now, instead of only flashing past for 2 s at boot.
+//   • New entity `mailbox_sender_version` — shows the sender's running
+//     firmware string under the Mailbox sensor device card in HA. Receiver
+//     parses the new `&fw=` field added by sender V1.0.9 (gracefully ignores
+//     packets without it, so a stale sender doesn't break parsing). Bumps
+//     discovery entity count from 15 → 16.
+//
+// V1.0.7 changes:
+//   • Sender_alive timeout doubled: 50 h → 98 h, in lockstep with the sender
+//     V1.0.8 heartbeat cadence change (24 h → 48 h). Scaling factor preserved
+//     (heartbeat × 2 + 2 h slack), so the "sender dead?" alert still tolerates
+//     exactly one missed heartbeat before flagging the link as broken.
+//
+// V1.0.6 changes:
+//   • BUG FIX A — `mailState` was set to true before the MQTT publish, even if
+//     the broker was disconnected. Symptom: after HA reboot, reed events that
+//     fired while MQTT was reconnecting silently flipped the local flag
+//     without reaching the broker. The receiver then thought state was
+//     already MAIL on subsequent events and never re-published, leaving HA
+//     stuck on EMPTY/Unknown until manually cleared. Fix: only mutate
+//     mailState (and lastMailTransitionMs) after the publish has actually
+//     been sent. Same pattern applied in clearMailState. Added a log line
+//     for the disconnected-publish path so future regressions are visible.
+//
+//   • BUG FIX B — onMqttMessage subscribed to T_STATE but ignored incoming
+//     messages on that topic, so the comment in setup() about "Restore sticky
+//     state from broker" never actually worked. Now T_STATE = "MAIL" / "EMPTY"
+//     updates mailState locally. This recovers the receiver's view from the
+//     broker on reboot AND keeps it in sync if any other client (e.g. HA
+//     dashboard) publishes to mailbox/state directly.
 //
 // V1.0.5 changes:
 //   • BUG FIX — PRG short-press logged "wake OLED" but the screen stayed dark.
@@ -49,7 +188,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V1.0.5"
+#define FW_VERSION "V1.2.1"
 //
 // Listens for LoRa packets from the mailbox sender (Adafruit Feather 32u4 LoRa) on EU 868 MHz,
 // parses the key=value payload, publishes each field to its own MQTT topic, and drives a sticky
@@ -58,10 +197,10 @@
 // New in V3 (vs V2_real archived in Old Receiver sketches/):
 //   • Real reconnect logic — no more `while(1)` halts on broker hiccups
 //   • Hardware watchdog — recovers from any firmware hang within 30 s
-//   • MQTT discovery — HA self-creates the device + 15 entities on every boot
+//   • MQTT discovery — HA self-creates the "Mailbox" device + 18 entities on every boot
 //   • Last-Will-and-Testament — HA shows receiver as offline immediately when it dies
 //   • Sticky mailbox/state retained, cleared by HA dashboard or PRG long-press
-//   • Sender-alive heartbeat detector — flags the Feather if no packet in 50 h
+//   • Sender-alive heartbeat detector — flags the Feather if no packet in 98 h
 //   • ArduinoOTA — flash from laptop without USB cable (no password — trust the LAN)
 //   • OLED auto-off after 10 min idle, woken by PRG short-press
 //   • NTP-stamped last_seen, fi.pool.ntp.org, Europe/Helsinki
@@ -110,31 +249,42 @@ const char  MQTT_BROKER[]    = MQTTBROKER;
 const int   MQTT_PORT        = 1883;
 const char  MQTT_CLIENT_ID[] = "MailboxReceiver";
 
-// State + sensor topics (RX → HA)
-const char T_STATE[]          = "mailbox/state";              // retained, QoS 1, "MAIL"/"EMPTY"
-// T_LID is unused as of V1.0.4 (entity removed from discovery + publish path).
-// Kept declared so re-enabling the feature later is a one-line change.
-const char T_LID[]            = "mailbox/lid";                // currently unpublished
-const char T_TEMP[]           = "mailbox/temp";
-const char T_HUMID[]          = "mailbox/humidity";
-const char T_PRESSURE[]       = "mailbox/pressure";
-const char T_BATT_V[]         = "mailbox/battery_voltage";
-const char T_BATT_PCT[]       = "mailbox/battery_percent";
-const char T_MSG_COUNT[]      = "mailbox/msg_count";
-const char T_RSSI[]           = "mailbox/rssi";
-const char T_SNR[]            = "mailbox/snr";
-const char T_LAST_SEEN[]      = "mailbox/last_seen";
-const char T_SENSOR_OK[]      = "mailbox/sensor_ok";
-const char T_BOOT_COUNT[]     = "mailbox/boot_count";
-const char T_BOOT_REASON[]    = "mailbox/boot_reason";
-const char T_PACKET_TYPE[]    = "mailbox/last_packet_type";
-const char T_SENDER_ALIVE[]   = "mailbox/sender_alive";       // retained
-const char T_RX_ONLINE[]      = "mailbox/receiver/online";    // LWT-retained
-const char T_RX_WIFI[]        = "mailbox/receiver/wifi_rssi";
-const char T_RX_UPTIME[]      = "mailbox/receiver/uptime";
+// Topic tree — V1.1.0 restructure. Every topic is namespaced under either
+// `mailbox/sender/...` (data the FEATHER produces) or `mailbox/receiver/...`
+// (data this RECEIVER measures), with `mailbox/state` as the device-level
+// headline. Pre-V1.1.0 topics (`mailbox/temp`, `mailbox/rssi`,
+// `mailbox/sender_fw`, etc.) and the legacy `mailboxstatus/*` compat tree
+// are gone — no aliases kept (Q3-b clean break).
 
-// Subscribe topic (HA → RX) — the existing dashboard "Mailbox" button publishes here.
-const char T_CLEAR[]          = "mailboxstatus/switch";       // we listen for "OFF"
+// Headline (bidirectional — receiver publishes MAIL/EMPTY, HA may publish
+// EMPTY to clear).
+const char T_STATE[]          = "mailbox/state";                    // retained, QoS 1, "MAIL"/"EMPTY"
+
+// Sender-derived (RX → HA), all retained on publish.
+const char T_S_TEMPERATURE[]      = "mailbox/sender/temperature";
+const char T_S_HUMIDITY[]         = "mailbox/sender/humidity";
+const char T_S_PRESSURE[]         = "mailbox/sender/pressure";
+const char T_S_BATTERY_VOLTAGE[]  = "mailbox/sender/battery_voltage";
+const char T_S_BATTERY_PERCENT[]  = "mailbox/sender/battery_percent";
+const char T_S_PACKET_SEQ[]       = "mailbox/sender/packet_seq";
+const char T_S_LAST_PACKET_TYPE[] = "mailbox/sender/last_packet_type";
+const char T_S_BOOT_COUNT[]       = "mailbox/sender/boot_count";
+const char T_S_BOOT_REASON[]      = "mailbox/sender/boot_reason";
+const char T_S_SENSOR_OK[]        = "mailbox/sender/sensor_ok";     // side channel, no HA entity
+const char T_S_ALIVE[]            = "mailbox/sender/alive";         // retained, "true"/"false"
+const char T_S_VERSION[]          = "mailbox/sender/version";       // sender FW string
+
+// Receiver-measured (RX → HA).
+const char T_R_RSSI[]         = "mailbox/receiver/rssi";
+const char T_R_SNR[]          = "mailbox/receiver/snr";
+const char T_R_LAST_SEEN[]    = "mailbox/receiver/last_seen";
+const char T_R_ONLINE[]       = "mailbox/receiver/online";          // LWT-retained
+const char T_R_WIFI_RSSI[]    = "mailbox/receiver/wifi_rssi";
+const char T_R_UPTIME[]       = "mailbox/receiver/uptime";
+
+// No HA→RX clear-topic anymore. HA dashboard publishes "EMPTY" (retained)
+// directly to `mailbox/state`; the existing T_STATE subscription + V1.0.6
+// Fix B handler picks it up and updates `mailState` locally.
 
 ////////////////////////////////////////////////////////////////////////////////
 // Tunables
@@ -143,8 +293,9 @@ const char T_CLEAR[]          = "mailboxstatus/switch";       // we listen for "
 #define WDT_TIMEOUT_S            30
 
 // Sender-alive timeout: if no packet within this many ms, flag the sender dead.
-// 50 h = (24 h heartbeat × 2) + 2 h slack — covers one missed heartbeat.
-#define SENDER_ALIVE_TIMEOUT_MS  (50UL * 3600UL * 1000UL)
+// 98 h = (48 h heartbeat × 2) + 2 h slack — covers one missed heartbeat.
+// V1.0.7: was 50UL (matched the old 24 h sender heartbeat).
+#define SENDER_ALIVE_TIMEOUT_MS  (98UL * 3600UL * 1000UL)
 
 // Sticky-state defensive guard: after publishing MAIL, ignore further reed events
 // for this long. Belt-and-braces on top of the sender's 60 s lockout.
@@ -195,6 +346,7 @@ struct {
   uint16_t bootCount   = 0;
   uint32_t uptimeMin   = 0;
   String   bootReason  = "";
+  String   fw          = "";      // V1.0.8 — sender firmware string from &fw= field
   float    rssi        = 0;
   float    snr         = 0;
 } lastPkt;
@@ -248,8 +400,9 @@ void onLoraRx() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// MQTT message handler — only one topic subscribed (T_CLEAR), but written
-// extensibly so adding subscriptions later doesn't require a refactor.
+// MQTT message handler — only T_STATE is subscribed (V1.1.0 dropped the
+// legacy T_CLEAR/mailboxstatus subscription). HA clears the sticky state by
+// publishing "EMPTY" (retained) directly to mailbox/state, which lands here.
 ////////////////////////////////////////////////////////////////////////////////
 void onMqttMessage(int messageSize) {
   String topic   = mqttClient.messageTopic();
@@ -259,12 +412,26 @@ void onMqttMessage(int messageSize) {
   }
   LOG("mqtt", "RX %s = %s", topic.c_str(), payload.c_str());
 
-  // The HA dashboard "Mailbox" button publishes "OFF" here when tapped. Anything
-  // that's not "ON" treated as a clear command — this matches what the existing
-  // dashboard YAML does.
-  if (topic == T_CLEAR) {
-    if (payload != "ON") {
-      clearMailState("ha-button");
+  if (topic == T_STATE) {
+    // V1.0.6 fix B: keep mailState in sync with the broker's retained value.
+    //
+    // Three cases this handles:
+    //   1) Receiver boot — the subscribe to T_STATE near the end of setup()
+    //      triggers the broker to replay its retained MAIL/EMPTY here, so
+    //      our local mailState reflects reality from the first millisecond
+    //      instead of starting at false and potentially mis-firing.
+    //   2) State drift while disconnected — if HA cleared the state via the
+    //      dashboard while our MQTT was down, the retained EMPTY arrives on
+    //      reconnect and we adopt it (otherwise we'd think it was still MAIL
+    //      and refuse the next legitimate reed-event publish).
+    //   3) HA dashboard clear — V1.1.0+: tapping the "Mailbox" tile publishes
+    //      "EMPTY" (retained) directly to mailbox/state. We simply adopt it.
+    //
+    // Self-publish echoes are no-ops (payload matches mailState already).
+    bool newState = (payload == "MAIL");
+    if (newState != mailState) {
+      mailState = newState;
+      LOG("state", "sync from broker → %s", newState ? "MAIL" : "EMPTY");
     }
   }
 }
@@ -284,8 +451,11 @@ void setup() {
   display.setTextAlignment(TEXT_ALIGN_LEFT);
   display.cls();
 
-  // Boot splash — give the user 2 s to see the version + IP placeholder.
-  display.drawString(0,  0, "Mailbox RX " FW_VERSION);
+  // Boot splash — give the user 2 s to see who/what is booting.
+  // V1.0.8: FW_VERSION removed from this screen and moved to the top-right
+  // of the main renderOled() status row so it's visible all the time, not
+  // just at boot. The Serial log below still prints it for flash debugging.
+  display.drawString(0,  0, "Mailbox RX");
   display.drawString(0, 14, "by Marko");
   display.drawString(0, 32, "Booting...");
   display.display();
@@ -335,28 +505,91 @@ void setup() {
   }
 
   // ArduinoOTA — no password (per project decision: trust the LAN).
+  //
+  // V1.1.1: WDT-kick from the OTA callbacks. ArduinoOTA.handle() blocks the
+  // main loop() during the entire upload, so the normal `esp_task_wdt_reset()`
+  // call at the top of loop() never runs — without this the 30 s WDT trips
+  // mid-upload and the chip resets (manifests as WinError 10054 in Arduino
+  // IDE at ~50 %). Kicking the WDT from onProgress (fires every few KB) keeps
+  // it happy for the full upload while still catching real firmware hangs.
   ArduinoOTA.setHostname("arduinomailman");
   ArduinoOTA.onStart([]() {
     LOG("ota", "OTA update starting — pausing main loop");
+    // V1.1.1: silence the LoRa interrupt during OTA. RadioLib's DIO1 ISR
+    // pokes SPI when a packet arrives, and a flash-erase landing on the same
+    // SPI bus is a recipe for corruption. On a successful OTA the chip
+    // reboots and re-initialises radio cleanly; the onError path re-arms RX
+    // so a failed upload doesn't leave us LoRa-deaf until manual reboot.
+    radio.clearDio1Action();
+    esp_task_wdt_reset();
+    if (!displayOn) { display.displayOn(); displayOn = true; }
     display.cls();
-    display.drawString(0, 0, "OTA UPDATE");
-    display.drawString(0, 16, "do not power off");
+    display.setFont(ArialMT_Plain_16);
+    display.drawString(0, 0,  "OTA UPDATE");
+    display.setFont(ArialMT_Plain_10);
+    display.drawString(0, 22, "do not power off");
     display.display();
   });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    esp_task_wdt_reset();   // V1.1.1 — the actual reason this whole block exists
+    // Update the OLED progress bar every ~5 % to avoid spamming the SSD1306
+    // I2C bus and slowing the upload itself.
+    static unsigned int lastShownPct = 101;
+    unsigned int pct = total ? (progress * 100U) / total : 0;
+    if (pct != lastShownPct && pct % 5 == 0) {
+      lastShownPct = pct;
+      display.cls();
+      display.setFont(ArialMT_Plain_16);
+      display.drawString(0, 0,  "OTA UPDATE");
+      display.setFont(ArialMT_Plain_10);
+      char line[24];
+      snprintf(line, sizeof(line), "%u%%   %u / %u", pct, progress, total);
+      display.drawString(0, 22, line);
+      // Simple progress bar across the bottom row.
+      int barW = (int) ((128 * (uint32_t) progress) / (total ? total : 1));
+      display.drawRect(0, 50, 128, 10);
+      display.fillRect(0, 50, barW, 10);
+      display.display();
+    }
+  });
   ArduinoOTA.onEnd([]() {
+    esp_task_wdt_reset();
     LOG("ota", "OTA complete, rebooting");
+    display.cls();
+    display.setFont(ArialMT_Plain_16);
+    display.drawString(0, 16, "OTA OK");
+    display.drawString(0, 36, "rebooting");
+    display.display();
   });
   ArduinoOTA.onError([](ota_error_t e) {
-    LOG("ota", "OTA error %d", (int) e);
+    esp_task_wdt_reset();
+    LOG("ota", "OTA error %d — restoring LoRa RX", (int) e);
+    // Re-arm the LoRa interrupt and receiver so a failed upload doesn't
+    // leave us deaf. The interrupt was cleared in onStart; restore it.
+    radio.setDio1Action(onLoraRx);
+    radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF);
+    display.cls();
+    display.setFont(ArialMT_Plain_16);
+    display.drawString(0, 0,  "OTA FAILED");
+    display.setFont(ArialMT_Plain_10);
+    char line[24];
+    snprintf(line, sizeof(line), "err %d", (int) e);
+    display.drawString(0, 22, line);
+    display.drawString(0, 36, "LoRa restored");
+    display.display();
   });
   ArduinoOTA.begin();
   LOG("ota", "OTA ready @ %s", WiFi.localIP().toString().c_str());
 
   connectMqtt();           // includes LWT setup
-  publishDiscoveryAll();   // 15 entities × discovery JSON; HA dedups by unique_id
+  publishDiscoveryAll();   // 18 entities × discovery JSON; HA dedups by unique_id
 
-  // Subscribe to the dashboard clear-button topic.
-  mqttClient.subscribe(T_CLEAR);
+  // V1.1.0: only T_STATE is subscribed now. HA clears the sticky state by
+  // publishing "EMPTY" (retained) directly to mailbox/state, which also lands
+  // here — see V1.0.6 Fix B in onMqttMessage. The retained MAIL/EMPTY value
+  // also replays on this subscription at boot, restoring our local mailState
+  // from the broker without explicit code.
+  mqttClient.subscribe(T_STATE);
   mqttClient.onMessage(onMqttMessage);
 
   // LoRa init — uses the Heltec library's pre-wired SX1262 pin map.
@@ -428,7 +661,7 @@ void loop() {
                         (millis() - lastPacketRxMs < SENDER_ALIVE_TIMEOUT_MS);
   if (senderAliveNow != senderAliveLast) {
     if (mqttClient.connected()) {
-      mqttClient.beginMessage(T_SENDER_ALIVE, true, 1);   // retained, QoS 1
+      mqttClient.beginMessage(T_S_ALIVE, true, 1);   // retained, QoS 1
       mqttClient.print(senderAliveNow ? "true" : "false");
       mqttClient.endMessage();
       senderAliveLast = senderAliveNow;
@@ -488,7 +721,7 @@ void connectMqtt() {
   mqttClient.setTxPayloadSize(1024);
   // LWT: retained, QoS 1, payload "false". The broker publishes this if we
   // disconnect ungracefully — HA will see receiver_online flip immediately.
-  mqttClient.beginWill(T_RX_ONLINE, true, 1);
+  mqttClient.beginWill(T_R_ONLINE, true, 1);
   mqttClient.print("false");
   mqttClient.endWill();
 
@@ -499,7 +732,7 @@ void connectMqtt() {
   LOG("mqtt", "Connected to %s", MQTT_BROKER);
 
   // Mark ourselves online (counterpart to the LWT).
-  mqttClient.beginMessage(T_RX_ONLINE, true, 1);
+  mqttClient.beginMessage(T_R_ONLINE, true, 1);
   mqttClient.print("true");
   mqttClient.endMessage();
 }
@@ -519,8 +752,8 @@ void connectMqtt() {
 // so this picks up FW_VERSION at compile time.
 const char DEV_BLOCK[] = ","
   "\"device\":{"
-    "\"identifiers\":[\"mailbox_sensor_v3\"],"
-    "\"name\":\"Mailbox sensor\","
+    "\"identifiers\":[\"mailbox_sensor_v3\"],"       // kept stable — see V1.1.0 notes
+    "\"name\":\"Mailbox\","                          // V1.1.0: was "Mailbox sensor"
     "\"manufacturer\":\"Marko\","
     "\"model\":\"Feather 32u4 LoRa + Heltec V3\","
     "\"sw_version\":\"" FW_VERSION "\""
@@ -550,67 +783,74 @@ void publishOneDiscovery(const char* platform, const char* uniqueId,
 }
 
 void publishDiscoveryAll() {
-  LOG("disc", "Publishing 15 entity configs");
-  // binary_sensor.mailbox_state — the headline entity. Sticky, payload MAIL/EMPTY.
-  publishOneDiscovery("binary_sensor", "mailbox_state", "Mailbox state",
+  // V1.2.0: 18 entities. Names + unique_ids no longer carry the "mailbox"
+  // prefix — HA prepends the device name "Mailbox" automatically. This avoids
+  // the doubled `sensor.mailbox_mailbox_*` entity_id that modern HA produced
+  // for the V1.1.0/V1.1.1 discovery payloads.
+  LOG("disc", "Publishing 18 entity configs (V1.2.0 no-prefix scheme)");
+
+  // ---- Headline ------------------------------------------------------------
+  // binary_sensor.mailbox_state — sticky, payload MAIL/EMPTY.
+  // Composed entity_id: device-slug "mailbox" + object_id "state".
+  publishOneDiscovery("binary_sensor", "state", "State",
                       T_STATE, "occupancy", nullptr, nullptr, nullptr,
                       "\"payload_on\":\"MAIL\",\"payload_off\":\"EMPTY\"");
 
-  // V1.0.4: mailbox_lid entity removed (was useless without lid-close TX from
-  // sender, which was rolled back). T_LID topic no longer published to.
+  // ---- Sender-derived (BME280, LiPo, packet bookkeeping) ------------------
+  publishOneDiscovery("sensor", "sender_temperature", "Sender temperature",
+                      T_S_TEMPERATURE, "temperature", "°C", "measurement", nullptr);
+  publishOneDiscovery("sensor", "sender_humidity", "Sender humidity",
+                      T_S_HUMIDITY, "humidity", "%", "measurement", nullptr);
+  publishOneDiscovery("sensor", "sender_pressure", "Sender pressure",
+                      T_S_PRESSURE, "pressure", "hPa", "measurement", nullptr);
 
-  // BME280 sensors.
-  publishOneDiscovery("sensor", "mailbox_temp", "Mailbox temperature",
-                      T_TEMP, "temperature", "°C", "measurement", nullptr);
-  publishOneDiscovery("sensor", "mailbox_humidity", "Mailbox humidity",
-                      T_HUMID, "humidity", "%", "measurement", nullptr);
-  publishOneDiscovery("sensor", "mailbox_pressure", "Mailbox pressure",
-                      T_PRESSURE, "pressure", "hPa", "measurement", nullptr);
+  publishOneDiscovery("sensor", "sender_battery_voltage", "Sender battery voltage",
+                      T_S_BATTERY_VOLTAGE, "voltage", "V", "measurement", "diagnostic");
+  publishOneDiscovery("sensor", "sender_battery", "Sender battery",
+                      T_S_BATTERY_PERCENT, "battery", "%", "measurement", nullptr);
 
-  // Battery — both raw voltage and a percent-of-full.
-  publishOneDiscovery("sensor", "mailbox_battery_voltage", "Mailbox battery voltage",
-                      T_BATT_V, "voltage", "V", "measurement", "diagnostic");
-  publishOneDiscovery("sensor", "mailbox_battery_percent", "Mailbox battery",
-                      T_BATT_PCT, "battery", "%", "measurement", nullptr);
+  // Packet bookkeeping. state_class intentionally absent — HA rejects state_class
+  // without unit_of_measurement, and a sequence counter has no natural unit.
+  publishOneDiscovery("sensor", "sender_packet_seq", "Sender packet seq",
+                      T_S_PACKET_SEQ, nullptr, nullptr, nullptr, "diagnostic");
+  publishOneDiscovery("sensor", "sender_last_packet_type", "Sender last packet type",
+                      T_S_LAST_PACKET_TYPE, nullptr, nullptr, nullptr, "diagnostic");
+  publishOneDiscovery("sensor", "sender_boot_count", "Sender boot count",
+                      T_S_BOOT_COUNT, nullptr, nullptr, nullptr, "diagnostic");
+  publishOneDiscovery("sensor", "sender_boot_reason", "Sender boot reason",
+                      T_S_BOOT_REASON, nullptr, nullptr, nullptr, "diagnostic");
 
-  // Diagnostics — packet bookkeeping and link quality.
-  // V1.0.3: state_class dropped — HA rejects state_class without unit_of_measurement.
-  // The packet sequence is just an integer counter, no unit makes sense for it.
-  publishOneDiscovery("sensor", "mailbox_msg_count", "Mailbox packet seq",
-                      T_MSG_COUNT, nullptr, nullptr, nullptr, "diagnostic");
-  publishOneDiscovery("sensor", "mailbox_rssi", "Mailbox RSSI",
-                      T_RSSI, "signal_strength", "dBm", "measurement", "diagnostic");
-  publishOneDiscovery("sensor", "mailbox_snr", "Mailbox SNR",
-                      T_SNR, nullptr, "dB", "measurement", "diagnostic");
-  publishOneDiscovery("sensor", "mailbox_last_seen", "Mailbox last seen",
-                      T_LAST_SEEN, "timestamp", nullptr, nullptr, "diagnostic");
-  publishOneDiscovery("sensor", "mailbox_last_packet_type", "Mailbox last packet type",
-                      T_PACKET_TYPE, nullptr, nullptr, nullptr, "diagnostic");
-  // V1.0.3: state_class dropped — see msg_count comment above.
-  publishOneDiscovery("sensor", "mailbox_boot_count", "Mailbox boot count",
-                      T_BOOT_COUNT, nullptr, nullptr, nullptr, "diagnostic");
-  publishOneDiscovery("sensor", "mailbox_boot_reason", "Mailbox boot reason",
-                      T_BOOT_REASON, nullptr, nullptr, nullptr, "diagnostic");
-
-  // Connectivity binary sensors.
-  publishOneDiscovery("binary_sensor", "mailbox_sender_alive", "Mailbox sender alive",
-                      T_SENDER_ALIVE, "connectivity", nullptr, nullptr, "diagnostic",
-                      "\"payload_on\":\"true\",\"payload_off\":\"false\"");
-  publishOneDiscovery("binary_sensor", "mailbox_receiver_online", "Mailbox receiver online",
-                      T_RX_ONLINE, "connectivity", nullptr, nullptr, "diagnostic",
+  publishOneDiscovery("binary_sensor", "sender_alive", "Sender alive",
+                      T_S_ALIVE, "connectivity", nullptr, nullptr, "diagnostic",
                       "\"payload_on\":\"true\",\"payload_off\":\"false\"");
 
-  // Receiver self-diagnostics.
-  publishOneDiscovery("sensor", "mailbox_receiver_wifi_rssi", "Mailbox receiver WiFi RSSI",
-                      T_RX_WIFI, "signal_strength", "dBm", "measurement", "diagnostic");
-  publishOneDiscovery("sensor", "mailbox_receiver_uptime", "Mailbox receiver uptime",
-                      T_RX_UPTIME, "duration", "s", "total_increasing", "diagnostic");
+  // Sender firmware version — populated by sender V1.0.9+ via the &fw= packet
+  // field. Plain text sensor, no unit/class. Icon picked to look "version-y".
+  publishOneDiscovery("sensor", "sender_version", "Sender version",
+                      T_S_VERSION, nullptr, nullptr, nullptr, "diagnostic",
+                      "\"icon\":\"mdi:tag-text\"");
+
+  // ---- Receiver-measured (link quality + receiver self-diagnostics) -------
+  publishOneDiscovery("sensor", "receiver_rssi", "Receiver RSSI",
+                      T_R_RSSI, "signal_strength", "dBm", "measurement", "diagnostic");
+  publishOneDiscovery("sensor", "receiver_snr", "Receiver SNR",
+                      T_R_SNR, nullptr, "dB", "measurement", "diagnostic");
+  publishOneDiscovery("sensor", "receiver_last_seen", "Receiver last seen",
+                      T_R_LAST_SEEN, "timestamp", nullptr, nullptr, "diagnostic");
+
+  publishOneDiscovery("binary_sensor", "receiver_online", "Receiver online",
+                      T_R_ONLINE, "connectivity", nullptr, nullptr, "diagnostic",
+                      "\"payload_on\":\"true\",\"payload_off\":\"false\"");
+  publishOneDiscovery("sensor", "receiver_wifi_rssi", "Receiver WiFi RSSI",
+                      T_R_WIFI_RSSI, "signal_strength", "dBm", "measurement", "diagnostic");
+  publishOneDiscovery("sensor", "receiver_uptime", "Receiver uptime",
+                      T_R_UPTIME, "duration", "d", "total_increasing", "diagnostic");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Parser — key=value packet from sender.
 //
-// Expected keys (sender V3): id type seq t h p v r sok boot up br
+// Expected keys (sender V3): id type seq t h p v r sok boot up br fw
 // Unknown keys are silently ignored — that's the whole point of the format
 // (forward-compatible: sender adds new keys without coordinated reflashes).
 ////////////////////////////////////////////////////////////////////////////////
@@ -664,6 +904,7 @@ void parseAndDispatch(const String& payload, float rssi, float snr) {
   s = getKv(payload, "boot"); if (s.length()) lastPkt.bootCount   = s.toInt();
   s = getKv(payload, "up");   if (s.length()) lastPkt.uptimeMin   = s.toInt();
   s = getKv(payload, "br");   if (s.length()) lastPkt.bootReason  = s;
+  s = getKv(payload, "fw");   if (s.length()) lastPkt.fw          = s;   // V1.0.8
 
   lastSeq          = (int8_t) seq;
   lastPacketRxMs   = millis();
@@ -675,21 +916,23 @@ void parseAndDispatch(const String& payload, float rssi, float snr) {
   }
 
   // Sticky state transition — only on reed event packets, with the 60 s guard.
+  // V1.0.6 fix A: mutate mailState ONLY after a successful publish. Previously
+  // the flag was set unconditionally, so a reed event during HA reboot would
+  // leave the receiver thinking it had published when it hadn't.
   if (pktType == 1 && lastPkt.reedOpen) {
     if (!mailState && (millis() - lastMailTransitionMs > STATE_REPEAT_GUARD_MS)) {
-      mailState = true;
-      lastMailTransitionMs = millis();
       if (mqttClient.connected()) {
         mqttClient.beginMessage(T_STATE, true, 1);   // retained, QoS 1
         mqttClient.print("MAIL");
         mqttClient.endMessage();
-        // V2_real backward-compat (V1.0.1): also fire the old switch topic so
-        // the original HA dashboard's switch.adafruit_feather_mailboxstatus
-        // updates. Not retained — matches V2_real behaviour exactly.
-        mqttClient.beginMessage(T_CLEAR);
-        mqttClient.print("ON");
-        mqttClient.endMessage();
-        LOG("state", "MAIL → published (reed event) + legacy ON");
+        // V1.1.0 (Q3-b): legacy `mailboxstatus/switch=ON` publish removed.
+        mailState = true;                            // moved (V1.0.6 fix A)
+        lastMailTransitionMs = millis();             // moved (V1.0.6 fix A)
+        LOG("state", "MAIL → published (reed event)");
+      } else {
+        // V1.0.6 fix A: log the disconnected-publish path so we can see this
+        // exact case in the Serial monitor if it recurs.
+        LOG("state", "MAIL pending — MQTT disconnected, will retry on next reed event");
       }
     } else {
       LOG("state", "reed event ignored (already MAIL or guarded)");
@@ -707,24 +950,38 @@ void publishOne(const char* topic, const String& value, bool retained = false) {
   mqttClient.endMessage();
 }
 
+// V1.2.1: number → label for the sender_last_packet_type entity. The wire
+// format still uses numbers (smaller airtime), but HA gets a readable string.
+// Unknown types fall back to "type N" so a future sender adding a type isn't
+// silently masked as gibberish here.
+const char* packetTypeLabel(uint8_t pktType) {
+  switch (pktType) {
+    case 1: return "mail";
+    case 2: return "heartbeat";
+    case 3: return "heartbeat (low batt)";
+    case 4: return "boot";
+    default: return "unknown";
+  }
+}
+
 void publishOnePacket() {
   // Only publish sensor values when sok=1 — sok=0 means the sender's BME280
   // failed and the values are stale. Publishing stale values would mislead HA.
   if (lastPkt.sensorOk) {
-    publishOne(T_TEMP,     String(lastPkt.tempC,       2));
-    publishOne(T_HUMID,    String(lastPkt.humidPct));
-    publishOne(T_PRESSURE, String(lastPkt.pressureHpa, 1));
+    publishOne(T_S_TEMPERATURE, String(lastPkt.tempC,       2));
+    publishOne(T_S_HUMIDITY,    String(lastPkt.humidPct));
+    publishOne(T_S_PRESSURE,    String(lastPkt.pressureHpa, 1));
   }
-  publishOne(T_BATT_V,   String(lastPkt.vbatMv / 1000.0, 2),                true);
-  publishOne(T_BATT_PCT, batteryPercentString(lastPkt.vbatMv),              true);
-  // V1.0.4: T_LID publish removed alongside the entity — see header notes.
-  publishOne(T_MSG_COUNT, String(lastPkt.seq),                              true);
-  publishOne(T_RSSI,      String(lastPkt.rssi, 1),                          true);
-  publishOne(T_SNR,       String(lastPkt.snr,  1),                          true);
-  publishOne(T_SENSOR_OK, lastPkt.sensorOk ? "true" : "false");
-  publishOne(T_BOOT_COUNT, String(lastPkt.bootCount),                       true);
-  if (lastPkt.bootReason.length()) publishOne(T_BOOT_REASON, lastPkt.bootReason, true);
-  publishOne(T_PACKET_TYPE, String(lastPkt.packetType),                     true);
+  publishOne(T_S_BATTERY_VOLTAGE,  String(lastPkt.vbatMv / 1000.0, 2),         true);
+  publishOne(T_S_BATTERY_PERCENT,  batteryPercentString(lastPkt.vbatMv),       true);
+  publishOne(T_S_PACKET_SEQ,       String(lastPkt.seq),                        true);
+  publishOne(T_R_RSSI,             String(lastPkt.rssi, 1),                    true);
+  publishOne(T_R_SNR,              String(lastPkt.snr,  1),                    true);
+  publishOne(T_S_SENSOR_OK,        lastPkt.sensorOk ? "true" : "false");
+  publishOne(T_S_BOOT_COUNT,       String(lastPkt.bootCount),                  true);
+  if (lastPkt.bootReason.length()) publishOne(T_S_BOOT_REASON, lastPkt.bootReason, true);
+  if (lastPkt.fw.length())         publishOne(T_S_VERSION,     lastPkt.fw,         true);
+  publishOne(T_S_LAST_PACKET_TYPE, String(packetTypeLabel(lastPkt.packetType)), true);
 
   // last_seen — ISO 8601 timestamp from NTP-synced clock. HA renders as "X minutes ago".
   time_t now = time(nullptr);
@@ -732,31 +989,21 @@ void publishOnePacket() {
     struct tm* tmInfo = gmtime(&now);
     char isoBuf[32];
     strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tmInfo);
-    publishOne(T_LAST_SEEN, String(isoBuf), true);
+    publishOne(T_R_LAST_SEEN, String(isoBuf), true);
   }
 
-  // ---- V2_real backward-compat (V1.0.1) -------------------------------------
-  // Publish the JSON blob the original HA configuration.yaml mqtt: block
-  // expects under value_template: "{{ value_json.<key> }}". Field names match
-  // V2_real exactly: temp / humid / lipo (volts, not mV) / msgcount / rssi / snr.
-  // Not retained — matches V2_real behaviour. Drop in V3.1 after migration.
-  String legacyJson;
-  legacyJson.reserve(128);
-  legacyJson  = "{\"temp\":";      legacyJson += String(lastPkt.tempC,            2);
-  legacyJson += ",\"humid\":";     legacyJson += lastPkt.humidPct;
-  legacyJson += ",\"lipo\":";      legacyJson += String(lastPkt.vbatMv / 1000.0f, 2);
-  legacyJson += ",\"msgcount\":";  legacyJson += lastPkt.seq;
-  legacyJson += ",\"rssi\":";      legacyJson += String(lastPkt.rssi,             1);
-  legacyJson += ",\"snr\":";       legacyJson += String(lastPkt.snr,              1);
-  legacyJson += "}";
-  mqttClient.beginMessage("mailboxstatus/feather");
-  mqttClient.print(legacyJson);
-  mqttClient.endMessage();
+  // V1.1.0 (Q3-b): the V2_real `mailboxstatus/feather` JSON-blob publish has
+  // been removed. All values are now first-class HA entities on their own
+  // `mailbox/sender/*` and `mailbox/receiver/*` topics, so the blob has no
+  // remaining consumers in the project.
 }
 
 void publishDiagnostics() {
-  publishOne(T_RX_WIFI,   String(WiFi.RSSI()));
-  publishOne(T_RX_UPTIME, String(millis() / 1000UL));
+  publishOne(T_R_WIFI_RSSI, String(WiFi.RSSI()));
+  // V1.0.8: uptime in days, 2 decimals (was seconds in V1.0.7).
+  //   86 400 000 ms = 1 day. Float division so fractional days render correctly.
+  //   Discovery unit_of_measurement was changed from "s" → "d" in lockstep.
+  publishOne(T_R_UPTIME, String(millis() / 86400000.0, 2));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -784,7 +1031,8 @@ void renderOled() {
   display.cls();
   display.setFont(ArialMT_Plain_10);
 
-  // Top row: WiFi/MQTT status, time
+  // Top row: WiFi/MQTT status + clock on the left, FW version on the right.
+  // V1.0.8: version moved here from the boot-only splash so it's always visible.
   String topRow = (WiFi.status() == WL_CONNECTED) ? "WiFi " : "wifi? ";
   topRow += (mqttClient.connected())               ? "MQTT " : "mqtt? ";
   time_t now = time(nullptr);
@@ -796,6 +1044,11 @@ void renderOled() {
     topRow += hm;
   }
   display.drawString(0, 0, topRow);
+  // Right-justified FW version. Reset alignment afterwards so the rest of
+  // renderOled() keeps drawing left-aligned as it always has.
+  display.setTextAlignment(TEXT_ALIGN_RIGHT);
+  display.drawString(128, 0, FW_VERSION);
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
 
   // Big middle: MAIL / —
   display.setFont(ArialMT_Plain_24);
@@ -859,15 +1112,23 @@ void handleButton() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Clear the sticky mail state — called from HA dashboard button (T_CLEAR
-// payload = "OFF") or from the local PRG long-press.
+// Clear the sticky mail state — called from the local PRG long-press.
+// (V1.1.0: HA dashboard no longer routes through here; the dashboard
+// publishes "EMPTY" directly to mailbox/state and onMqttMessage adopts it.)
 ////////////////////////////////////////////////////////////////////////////////
 void clearMailState(const char* source) {
-  mailState = false;
+  // V1.0.6 fix A (same pattern as the MAIL transition): only mutate mailState
+  // after the publish lands on the broker. Otherwise an offline long-press
+  // would silently flip the local flag while the broker still showed MAIL,
+  // and the receiver would refuse to re-publish "MAIL" on the next real
+  // reed event (already EMPTY locally, broker out of sync).
   if (mqttClient.connected()) {
     mqttClient.beginMessage(T_STATE, true, 1);   // retained, QoS 1
     mqttClient.print("EMPTY");
     mqttClient.endMessage();
+    mailState = false;                           // moved (V1.0.6 fix A)
+    LOG("state", "EMPTY ← cleared by %s", source);
+  } else {
+    LOG("state", "EMPTY clear PENDING (source=%s) — MQTT disconnected; retry later", source);
   }
-  LOG("state", "EMPTY ← cleared by %s", source);
 }

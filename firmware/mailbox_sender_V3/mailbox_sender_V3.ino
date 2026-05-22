@@ -1,4 +1,62 @@
-// V1.0.6 — 2026-05-07 — Mailbox sender V3 (Adafruit Feather 32u4 LoRa, BME280, NO reed)
+// V1.1.0 — 2026-05-22 — Mailbox sender V3 (Adafruit Feather 32u4 LoRa, BME280, NO reed)
+//
+// V1.1.0 changes:
+//   • `&br=` (boot reason) now sent in EVERY packet, not just type=4 boot
+//     packets. Pre-V1.1.0 the field only flew once per sender boot, so if HA
+//     was offline at boot time (or the retained MQTT value was wiped by an
+//     entity rename), HA showed `mailbox_sender_boot_reason = Unknown` until
+//     the next sender restart — which on this device might be weeks away.
+//     With br= on every packet HA always has the current value cached.
+//     Cost: +6 bytes airtime per packet, well below the noise floor.
+//   • `bootReasonStr()` labels expanded for HA-display readability and the
+//     "MCUSR == 0" default changed from `"unknown"` (which HA renders as the
+//     Unknown state) to `"normal"`. The 32u4's Caterina bootloader clears
+//     MCUSR before `.init3` can read it on many resets, so the default fires
+//     often in practice. New mapping:
+//        PORF  → "power-on"      (was "cold")
+//        EXTRF → "external reset"(was "external")
+//        WDRF  → "watchdog"      (was "wdt")
+//        BORF  → "brown-out"     (was "brownout")
+//        none  → "normal"        (was "unknown")
+//   • Companion receiver change: V1.2.1 translates the numeric `type=` field
+//     into a text label ("mail" / "heartbeat" / "heartbeat (low batt)" /
+//     "boot") before publishing to `mailbox/sender/last_packet_type`. No
+//     wire-format change — the on-air `type=` is still 1/2/3/4.
+//
+// V1.0.9 changes:
+//   • Energy option B — WDT tick stretched from 8 s → 32 s. Chip wakes 4× less
+//     often, drops the per-tick MCU activity from ~10800 wakes/day to ~2700.
+//     Implemented by calling LowPower.powerDown(SLEEP_8S, …) four times per
+//     tick in a small `sleep32s()` helper (32u4's WDT prescaler caps at 8 s,
+//     so we can't ask the hardware for a single 32 s sleep). Reed events
+//     still wake immediately on INT2 LOW — `sleep32s()` bails out of the
+//     inner loop as soon as `reedFlag` is set, so reed-trigger latency is
+//     unchanged (≤ 8 s worst case, same as before).
+//     Rescaled tick-count constants:
+//        HB_TICKS_NORMAL    21600 → 5400  (still 48 h)
+//        HB_TICKS_LOW_BATT  2700  → 675   (still 6 h)
+//        LOCKOUT_TICKS      8     → 2     (still ≈ 64 s)
+//     Long-term saving ≈ 0.1 mAh/day — modest but free.
+//   • Sender now includes its FW string in every LoRa packet (new `&fw=`
+//     field). The receiver V1.0.8 publishes this to `mailbox/sender_fw` so
+//     the running sender version shows up as an entity on the Mailbox sensor
+//     device card in HA. Packet grows by ~9 bytes (negligible airtime).
+//
+// V1.0.8 changes:
+//   • Normal heartbeat cadence doubled: 24 h → 48 h (HB_TICKS_NORMAL 10800
+//     → 21600). Halves the long-term heartbeat TX count, slightly extends
+//     battery life. Low-battery heartbeat unchanged at 6 h — that's the
+//     urgency cadence and shouldn't scale with the normal one.
+//   • Receiver V1.0.7 stretches the sender_alive timeout to 98 h in lockstep
+//     so the "sender dead?" alert still tolerates one missed heartbeat.
+//
+// V1.0.7 changes:
+//   • Documentation only — antenna upgraded from the original 8.2 cm wire-stub
+//     (~0 dBi) to an external 868 MHz stubby (~+2 dBi) attached via u.FL
+//     pigtail. Antenna can now be routed outside the metal mailbox enclosure
+//     for ~10–15 dB better RSSI/SNR than the previous in-box wire stub.
+//     TX power intentionally LEFT at +20 dBm (see comment at LORA_TX_POWER).
+//     No code/runtime change in this version — just the FW_VERSION stamp.
 //
 // V1.0.6 changes:
 //   • Cosmetic — sketch and parent folder renamed from
@@ -44,7 +102,7 @@
 // V1.0.1 changes:
 //   • New build toggle DEBUG_NOSLEEP (default 1 for bench debugging). When on,
 //     the chip stays awake forever, so USB-CDC Serial doesn't drop out under
-//     PWR_DOWN. Set to 0 for field deployment to restore the 24 h sleep loop.
+//     PWR_DOWN. Set to 0 for field deployment to restore the 48 h sleep loop.
 //   • In DEBUG_NOSLEEP mode, prints sensor readings once per second in
 //     Arduino Serial Plotter format (label:value pairs) so the Plotter view
 //     graphs vbat / temp / humid / pres / reed_open simultaneously.
@@ -60,14 +118,14 @@
 // Single source of truth for the firmware version string. Used by the boot
 // SLOG banner. Update this when bumping the version stamp at the top of the
 // file so the runtime log matches the header without manual sync.
-#define FW_VERSION "V1.0.6"
+#define FW_VERSION "V1.1.0"
 //
 // Battery-powered mailbox sensor:
 //   • Sleeps in AVR PWR_DOWN (~10 µA + LiPo charger leakage) almost continuously.
 //   • Wakes on the reed switch (lid opens → magnet aligned → reed closes → INT2 LOW).
 //   • Reads the BME280, builds a key=value LoRa packet, transmits @ +20 dBm, sleeps.
 //   • 60 s lockout after each reed event so a bouncy lid doesn't double-notify.
-//   • Heartbeat every 24 h normally, every 6 h when vbat < 3.6 V (early dead-batt warning).
+//   • Heartbeat every 48 h normally, every 6 h when vbat < 3.6 V (early dead-batt warning).
 //   • Boot packet on every cold start, including the AVR reset reason for diagnostics.
 //
 // Hardware reference: SENDER_HARDWARE.md in this folder. Pin map matches that doc exactly.
@@ -96,7 +154,7 @@
 //     Use this when the sender "appears dead" — the 32u4's USB-CDC drops out
 //     during PWR_DOWN sleep so you'll never see Serial output in the field
 //     mode unless you're lucky with USB re-enumeration timing.
-// 0 = field mode: deep sleep + 24 h heartbeat as designed.
+// 0 = field mode: deep sleep + 48 h heartbeat as designed.
 #define DEBUG_NOSLEEP   0
 
 // Sub-toggle inside DEBUG_NOSLEEP: 1 = also fire a heartbeat TX every 30 s
@@ -149,19 +207,30 @@
 #define LORA_SF         9          // spreading factor 6..12
 #define LORA_TX_POWER   20         // dBm — overshoots EU 14 dBm ERP limit on paper but
                                    //       at 50 m through one tree, headroom matters more
-                                   //       than strict compliance for a hobby project
+                                   //       than strict compliance for a hobby project.
+                                   //
+                                   // V1.0.7 NOTE: external +2 dBi antenna installed but
+                                   // TX power deliberately kept at +20 dBm per user request.
+                                   // Net ERP rises ~+2 dB vs the wire-stub config. If link
+                                   // becomes flaky at lower battery voltages, this is the
+                                   // first knob to look at — dropping to +12 dBm would
+                                   // halve the per-TX current draw (120 mA → ~50 mA) at
+                                   // the cost of about 8 dB of link margin.
 
 ////////////////////////////////////////////////////////////////////////////////
-// Heartbeat scheduling — counted in 8 s WDT ticks because that's the smallest
-// granularity LowPower.powerDown(SLEEP_8S, ...) gives us.
+// Heartbeat scheduling — counted in 32 s "ticks" (V1.0.9 energy option B).
+// One tick = 4× LowPower.powerDown(SLEEP_8S, ...) calls back-to-back, because
+// the AVR WDT prescaler caps at 8 s. The `sleep32s()` helper bails out early
+// if `reedFlag` fires inside one of the four sub-sleeps, so reed-event
+// latency stays at ≤ 8 s worst case.
 //
-// Real-world WDT tolerance: ±10 %, so 24 h heartbeats can land ±2.4 h either
+// Real-world WDT tolerance: ±10 %, so 48 h heartbeats can land ±5 h either
 // side of nominal. Fine for a mailbox.
 ////////////////////////////////////////////////////////////////////////////////
-#define HB_TICKS_NORMAL    10800UL    // 24 h ÷ 8 s
-#define HB_TICKS_LOW_BATT  2700UL     // 6 h ÷ 8 s
+#define HB_TICKS_NORMAL    5400UL     // 48 h ÷ 32 s  (V1.0.9: was 21600 = 48 h ÷ 8 s)
+#define HB_TICKS_LOW_BATT  675UL      // 6 h  ÷ 32 s  (V1.0.9: was 2700  = 6 h  ÷ 8 s)
 #define LOW_BATT_MV        3600       // mV at which we boost heartbeat rate
-#define LOCKOUT_TICKS      8U         // 8 × 8 s = 64 s ≈ "60 s" reed lockout
+#define LOCKOUT_TICKS      2U         // 2 × 32 s = 64 s ≈ "60 s" reed lockout (V1.0.9: was 8)
 
 ////////////////////////////////////////////////////////////////////////////////
 // EEPROM map — 32u4 has 1024 bytes, rated ≥ 100 k erase/write cycles.
@@ -200,9 +269,9 @@ uint8_t       seq           = 0;           // sequence counter, RAM-only, wraps 
 uint16_t      bootCount     = 0;           // EEPROM-backed; ++ each cold boot
 uint16_t      reedEventCount = 0;          // EEPROM-backed; ++ each reed TX
 
-uint16_t      wdtCount       = 0;          // 8 s ticks since last heartbeat
+uint16_t      wdtCount       = 0;          // 32 s logical ticks since last heartbeat (V1.0.9)
 uint16_t      heartbeatTicks = HB_TICKS_NORMAL;
-uint8_t       lockoutTicksRemaining = 0;   // 8 s ticks of reed-ignore window
+uint8_t       lockoutTicksRemaining = 0;   // 32 s logical ticks of reed-ignore window (V1.0.9)
                                            // (V1.0.4: needLidCloseTx + type=5
                                            // logic removed — sender TXs only
                                            // on lid-open edge again.)
@@ -255,6 +324,7 @@ uint16_t readVbatMv();
 String buildPacket(uint8_t pktType);
 void sendPacket(uint8_t pktType);
 void blinkLed();
+bool sleep32s();
 
 ////////////////////////////////////////////////////////////////////////////////
 // Setup — runs exactly once on every cold/wake boot. Sends a type=4 boot
@@ -405,16 +475,16 @@ void loop() {
   }
 
   LoRa.sleep();                                              // RFM95 ~0.1 µA
-  LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF);            // ATmega32u4 ~5 µA
+  sleep32s();                                                // V1.0.9: 4× SLEEP_8S, bails on reedFlag
 
   if (reedAttached) {
     detachInterrupt(digitalPinToInterrupt(PIN_REED));        // ISR may have already done this; safe either way
   }
 
   // -------- Account for time elapsed --------
-  // Approximate: we slept at most 8 s. If reed interrupted earlier, the elapsed
+  // Approximate: we slept at most 32 s. If reed interrupted earlier, the elapsed
   // time is shorter — but we don't try to measure (no RTC, would cost battery
-  // to track). Rounding to 8 s ticks introduces ±5 % drift on the heartbeat
+  // to track). Rounding to 32 s ticks introduces ±5 % drift on the heartbeat
   // schedule, which is fine.
   if (lockoutTicksRemaining > 0) lockoutTicksRemaining--;
   wdtCount++;
@@ -439,22 +509,30 @@ void loop() {
     sendPacket(hbType);
     wdtCount = 0;
     // Re-evaluate cadence after each heartbeat so a freshly-charged battery
-    // returns us to 24 h cadence after charging recovers vbat above 3.6 V.
+    // returns us to 48 h cadence after charging recovers vbat above 3.6 V.
     heartbeatTicks = (v < LOW_BATT_MV) ? HB_TICKS_LOW_BATT : HB_TICKS_NORMAL;
   }
 }
 #endif   // DEBUG_NOSLEEP
 
 ////////////////////////////////////////////////////////////////////////////////
-// Boot reason — translates the saved MCUSR bits into a one-word string.
-// Order matters: WDT supersedes brownout supersedes external supersedes power-on.
+// Boot reason — translates the saved MCUSR bits into a human-readable string
+// that's published verbatim to HA. Order matters: WDT supersedes brown-out
+// supersedes external supersedes power-on (those bits can be set together
+// after a chained reset, and the more "interesting" cause wins).
+//
+// V1.1.0: default changed from "unknown" → "normal". The 32u4's Caterina
+// bootloader clears MCUSR (at least WDRF, often more) before `.init3` runs,
+// so the no-bits path fires on most real-world resets. "normal" reflects
+// "we restarted cleanly, no diagnostic bit survived" — way more useful than
+// "unknown" in HA.
 ////////////////////////////////////////////////////////////////////////////////
 const char* bootReasonStr() {
-  if (mcusrCopy & (1 << WDRF))  return "wdt";
-  if (mcusrCopy & (1 << BORF))  return "brownout";
-  if (mcusrCopy & (1 << EXTRF)) return "external";
-  if (mcusrCopy & (1 << PORF))  return "cold";
-  return "unknown";
+  if (mcusrCopy & (1 << WDRF))  return "watchdog";
+  if (mcusrCopy & (1 << BORF))  return "brown-out";
+  if (mcusrCopy & (1 << EXTRF)) return "external reset";
+  if (mcusrCopy & (1 << PORF))  return "power-on";
+  return "normal";
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -574,14 +652,17 @@ uint16_t readVbatMv() {
 //   sok  = BME280 sensor_ok flag
 //   boot = boot count (uint16)
 //   up   = uptime in minutes since this boot
-//   br   = boot reason ("cold" / "wdt" / "brownout" / "external") — type 4 only
+//   br   = boot reason ("power-on" / "external reset" / "watchdog" / "brown-out" / "normal")
+//          — V1.1.0+: in every packet, not just type=4 (so HA always has the current value)
+//   fw   = firmware version string (V1.0.9: new — receiver publishes to HA)
 ////////////////////////////////////////////////////////////////////////////////
 String buildPacket(uint8_t pktType) {
   uint16_t vbat   = readVbatMv();
   uint8_t  reedHi = (digitalRead(PIN_REED) == LOW) ? 1 : 0;   // LOW pin = reed CLOSED = lid OPEN
 
   String pkt;
-  pkt.reserve(80);
+  pkt.reserve(128);   // V1.0.9: was 80; new &fw= field pushes type=4 boot
+                      // packets to ~107 chars worst case, give a margin.
   pkt  = F("id=AA");
   pkt += F("&type="); pkt += pktType;
   pkt += F("&seq=");  pkt += seq;
@@ -593,9 +674,15 @@ String buildPacket(uint8_t pktType) {
   pkt += F("&sok=");  pkt += (cache.ok ? 1 : 0);
   pkt += F("&boot="); pkt += bootCount;
   pkt += F("&up=");   pkt += (uint32_t) (millis() / 60000UL);
-  if (pktType == 4) {
-    pkt += F("&br="); pkt += bootReasonStr();
-  }
+  // V1.1.0: `&br=` in every packet (was type=4 only). +6 bytes airtime per
+  // packet, but HA always has the current boot reason cached — survives MQTT
+  // outages, entity renames, and broker restarts without showing "Unknown".
+  pkt += F("&br=");   pkt += bootReasonStr();
+  // V1.0.9: append sender firmware version. Receiver V1.1.0+ publishes this
+  // to `mailbox/sender/version` (V1.0.8–V1.0.9 receivers used the pre-rename
+  // `mailbox/sender_fw` topic) → HA entity, so the sender's running version
+  // is visible on the device card without having to read the OLED.
+  pkt += F("&fw=");   pkt += FW_VERSION;
   return pkt;
 }
 
@@ -626,4 +713,27 @@ void blinkLed() {
   delay(100);
   digitalWrite(PIN_LED, LOW);
 #endif
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// sleep32s — one logical "tick" of the energy-budget clock (V1.0.9).
+//
+// The 32u4's WDT prescaler caps at 8 s, so LowPower.powerDown(SLEEP_8S, …) is
+// the longest sleep the hardware can do in a single call. We chain four of
+// them to get 32 s with one tick of bookkeeping.
+//
+// If the reed interrupt fires during one of the four sub-sleeps, the ISR sets
+// reedFlag and we bail out immediately — reed-event latency stays at ≤ 8 s
+// worst case, same as the V1.0.8 behaviour.
+//
+// Returns true if reedFlag is set on exit (reed wake), false otherwise (full
+// 32 s WDT-only sleep). The caller doesn't currently use the return value but
+// it's there for future explicit-wake-source tracking.
+////////////////////////////////////////////////////////////////////////////////
+bool sleep32s() {
+  for (uint8_t i = 0; i < 4; i++) {
+    LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF);   // ATmega32u4 ~5 µA
+    if (reedFlag) return true;                        // reed wake — let loop() handle it
+  }
+  return false;
 }

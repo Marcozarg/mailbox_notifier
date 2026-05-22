@@ -21,9 +21,9 @@ Field-tested at -58 dBm RSSI / +11 dB SNR through one large tree at 50 m.
 - **Mail-arrival notification** — opens lid → reed switch closes → LoRa packet → MQTT → iPhone Pushover within ~2 seconds.
 - **Sticky state** in Home Assistant. Cleared by tapping a dashboard button or long-pressing the receiver's PRG button after you've checked the mailbox.
 - **Environmental sensors** — temperature, humidity, pressure inside the mailbox (BME280).
-- **Battery monitoring** — voltage + percentage, with a 6 h "low battery" heartbeat boost (vs the normal 24 h cadence) when it dips below 3.6 V.
+- **Battery monitoring** — voltage + percentage, with a 6 h "low battery" heartbeat boost (vs the normal 48 h cadence) when it dips below 3.6 V.
 - **Three-layer dedup** — sender 60 s lockout + receiver guard + Node-RED Trigger node — prevents bouncy lid double-notifications.
-- **Auto-discovered** in HA via MQTT discovery: 17 entities under one "Mailbox sensor" device card, no manual `configuration.yaml` editing.
+- **Auto-discovered** in HA via MQTT discovery: 18 entities under one "Mailbox" device card, no manual `configuration.yaml` editing. Entity naming follows a strict `sender_/receiver_` scheme so the origin of every value is obvious.
 
 ## Repo layout
 
@@ -84,13 +84,15 @@ Pin maps and wiring details: [`docs/SENDER_HARDWARE.md`](docs/SENDER_HARDWARE.md
 
 4. **Wire up the sender** per [`docs/SENDER_HARDWARE.md`](docs/SENDER_HARDWARE.md). The reed-switch mounting is non-obvious — make sure to read §1.5 of that doc.
 
-5. **Flash the receiver first**, watch its Serial Monitor for the `[disc] Publishing 15 entity configs` line. The "Mailbox sensor" device should appear in HA → Settings → Devices & Services → MQTT.
+5. **Flash the receiver first**, watch its Serial Monitor for the `[disc] Publishing 18 entity configs` line. The "Mailbox" device should appear in HA → Settings → Devices & Services → MQTT.
 
 6. **Flash the sender**. Note the build-time toggles at the top of the `.ino`:
    - `DEBUG_NOSLEEP=1` for bench debugging (chip stays awake, prints sensor values once a second in Serial Plotter format).
    - All toggles set to `0` for field deployment.
 
 7. **Drop in the dashboard** from `home_assistant/HA_mailbox_dashboard.yaml` and the Pushover flow from `home_assistant/nodered_pushover_flow.json`.
+
+8. **Subsequent updates can go over WiFi (OTA).** Once the receiver is running, Arduino IDE will list `arduinomailman at <IP>` as a network port. Pick it, click Upload. The IDE will prompt for a password — **leave the field blank** and press OK; the receiver has no password set (per the locked design decision to trust the LAN). The OLED will show live `OTA xx%` during the upload.
 
 ## Documentation
 

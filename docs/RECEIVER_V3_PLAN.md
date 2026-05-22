@@ -127,17 +127,17 @@ Build the V3 receiver in three priority tiers. Tier 1 must work; tier 2 is "make
 - **Hardware watchdog** — 30 s WDT, kicked from `loop()`. Recover from any hang.
 - **Parse Tier-1.1 + Tier-1.2 fields** (temp, humidity, pressure, battery, reed, seq, type) and publish each to its own MQTT topic.
 - **Sticky `mailbox/state`** retained; cleared by HA dashboard.
-- **Subscribe to clear topic** — receiver listens for an "EMPTY" message on `mailboxstatus/switch` (the topic your existing dashboard button publishes to) and resets `mailbox/state`. No HA-side YAML change needed.
+- **Sticky-state clear path** — V1.1.0+: HA dashboard publishes `EMPTY` (retained) directly to `mailbox/state`; the receiver's `T_STATE` subscription adopts it (V1.0.6 Fix B path). Pre-V1.1.0 the receiver subscribed to `mailboxstatus/switch` and listened for `OFF`, but that legacy route was removed.
 - **OLED status:** WiFi/MQTT icons, big "MAIL" or "—" indicator, last packet info row.
 
 ### Tier 2 — "as good as possible"
 
 - **MQTT discovery** — receiver publishes `homeassistant/sensor/.../config` for each entity on every boot. HA self-creates the device + entities. Means you could delete the manual sensor YAML you may have in `configuration.yaml` (one source of truth). Big maintainability win.
 - **Last Will & Testament** — receiver tells the broker `mailbox/receiver/online = false` if it disconnects unexpectedly → HA shows "receiver offline" instead of stale data.
-- **Sender-alive heartbeat detector** — if no packet for >12 h (heartbeat-interval × 2 + slack), publish `mailbox/sender_alive = false`. HA can alert "battery dead?".
+- **Sender-alive heartbeat detector** — if no packet for >98 h (48 h heartbeat × 2 + 2 h slack), publish `mailbox/sender/alive = false` (was `mailbox/sender_alive` pre-V1.1.0). HA can alert "battery dead?".
 - **Battery percent calculation** — applied at receiver from LiPo curve, published as a separate sensor.
 - **Boot count + uptime + WiFi RSSI + free heap** — receiver self-diagnostics, all `entity_category: diagnostic` so they hide by default.
-- **NTP time sync** + `mailbox/last_seen` ISO timestamp.
+- **NTP time sync** + `mailbox/receiver/last_seen` ISO timestamp (was `mailbox/last_seen` pre-V1.1.0).
 - **Loss percentage** rolling over last 100 packets.
 - **OLED display timeout** — turn the panel off after 10 min idle, wake on user button. Saves OLED life and looks tidier.
 - **User-button actions** on the Heltec PRG button: short = wake display, long = manually clear `mailbox/state` (in case HA is down).
@@ -155,30 +155,33 @@ Build the V3 receiver in three priority tiers. Tier 1 must work; tier 2 is "make
 
 ## 4. MQTT topic + HA entity layout
 
-Proposed topic structure under `mailbox/`:
+Topic structure (V1.1.0+). All topics namespaced into `mailbox/sender/*` (data the Feather produces) and `mailbox/receiver/*` (data the receiver measures), with `mailbox/state` as the device-level headline. Pre-V1.1.0 flat topics (`mailbox/temp`, `mailbox/rssi`, `mailbox/sender_fw`, etc.) and the legacy `mailboxstatus/*` compat tree were dropped in V1.1.0 — no aliases kept.
 
 | Topic | Direction | Type | HA entity | Notes |
 |---|---|---|---|---|
-| `mailbox/state` | RX → HA | retained | `binary_sensor.mailbox_state` (occupancy) | "MAIL" or "EMPTY" — sticky |
-| `mailboxstatus/switch` | HA → RX | n/a | (existing dashboard button) | RX subscribes to this; "OFF" clears state |
-| `mailbox/lid` | RX → HA | not retained | `binary_sensor.mailbox_lid` (door) | Reed state at TX time |
-| `mailbox/temp` | RX → HA | not retained | `sensor.mailbox_temp` (°C, temperature) | |
-| `mailbox/humidity` | RX → HA | not retained | `sensor.mailbox_humidity` (%, humidity) | |
-| `mailbox/pressure` | RX → HA | not retained | `sensor.mailbox_pressure` (hPa, pressure) | |
-| `mailbox/battery_voltage` | RX → HA | retained | `sensor.mailbox_battery_v` (V, voltage) | |
-| `mailbox/battery_percent` | RX → HA | retained | `sensor.mailbox_battery_pct` (%, battery) | computed at RX |
-| `mailbox/msg_count` | RX → HA | retained | `sensor.mailbox_msg` | |
-| `mailbox/rssi` | RX → HA | retained | `sensor.mailbox_rssi` (dBm, signal_strength) | diagnostic |
-| `mailbox/snr` | RX → HA | retained | `sensor.mailbox_snr` (dB) | diagnostic |
-| `mailbox/last_seen` | RX → HA | retained | `sensor.mailbox_last_seen` (timestamp) | NTP-stamped on RX |
-| `mailbox/sender_alive` | RX → HA | retained | `binary_sensor.mailbox_sender_alive` | timeout-based |
+| `mailbox/state` | RX ↔ HA | retained | `binary_sensor.mailbox_state` (occupancy) | "MAIL" or "EMPTY" — sticky. HA dashboard publishes `EMPTY` (retained) directly to clear. |
+| `mailbox/sender/temperature` | RX → HA | not retained | `sensor.mailbox_sender_temperature` (°C, temperature) | BME280 |
+| `mailbox/sender/humidity` | RX → HA | not retained | `sensor.mailbox_sender_humidity` (%, humidity) | BME280 |
+| `mailbox/sender/pressure` | RX → HA | not retained | `sensor.mailbox_sender_pressure` (hPa, pressure) | BME280 |
+| `mailbox/sender/battery_voltage` | RX → HA | retained | `sensor.mailbox_sender_battery_voltage` (V, voltage) | diagnostic |
+| `mailbox/sender/battery_percent` | RX → HA | retained | `sensor.mailbox_sender_battery` (%, battery) | computed at RX |
+| `mailbox/sender/packet_seq` | RX → HA | retained | `sensor.mailbox_sender_packet_seq` | diagnostic |
+| `mailbox/sender/last_packet_type` | RX → HA | retained | `sensor.mailbox_sender_last_packet_type` | mail / heartbeat / heartbeat (low batt) / boot (V1.2.1+ receiver — was numeric 1/2/3/4 pre-V1.2.1), diagnostic |
+| `mailbox/sender/boot_count` | RX → HA | retained | `sensor.mailbox_sender_boot_count` | diagnostic |
+| `mailbox/sender/boot_reason` | RX → HA | retained | `sensor.mailbox_sender_boot_reason` | power-on / external reset / watchdog / brown-out / normal (V1.1.0+ sender; was cold/wdt/brownout/external/unknown pre-V1.1.0). Published on every packet, not just boot packets, so HA always has a value. |
+| `mailbox/sender/sensor_ok` | RX → HA | not retained | (no entity — side channel for debugging) | |
+| `mailbox/sender/alive` | RX → HA | retained | `binary_sensor.mailbox_sender_alive` | timeout-based |
+| `mailbox/sender/version` | RX → HA | retained | `sensor.mailbox_sender_version` | sender FW string (V1.0.9+ packet) |
+| `mailbox/receiver/rssi` | RX → HA | retained | `sensor.mailbox_receiver_rssi` (dBm, signal_strength) | of last RX packet |
+| `mailbox/receiver/snr` | RX → HA | retained | `sensor.mailbox_receiver_snr` (dB) | of last RX packet |
+| `mailbox/receiver/last_seen` | RX → HA | retained | `sensor.mailbox_receiver_last_seen` (timestamp) | NTP-stamped on RX |
 | `mailbox/receiver/online` | RX LWT | retained | `binary_sensor.mailbox_receiver_online` | LWT-managed |
-| `mailbox/receiver/wifi_rssi` | RX → HA | not retained | `sensor.mailbox_receiver_wifi` | diagnostic |
-| `mailbox/receiver/uptime` | RX → HA | not retained | `sensor.mailbox_receiver_uptime` | diagnostic |
+| `mailbox/receiver/wifi_rssi` | RX → HA | not retained | `sensor.mailbox_receiver_wifi_rssi` | diagnostic |
+| `mailbox/receiver/uptime` | RX → HA | not retained | `sensor.mailbox_receiver_uptime` (d, duration) | 2 decimals (V1.0.8+) |
 
-**Discovery:** all entities published once at receiver boot to `homeassistant/<platform>/<unique_id>/config` with the right `device_class`, `unit_of_measurement`, `state_class`, `entity_category`, and a shared `device` block grouping them under one HA device card called "Mailbox sensor."
+**Discovery:** all entities published once at receiver boot to `homeassistant/<platform>/<unique_id>/config` with the right `device_class`, `unit_of_measurement`, `state_class`, `entity_category`, and a shared `device` block grouping them under one HA device card called "Mailbox" (V1.1.0+; was "Mailbox sensor" pre-V1.1.0).
 
-**Backwards-compat:** keep publishing the old `mailboxstatus/feather` JSON blob too, so anything in your existing HA setup that reads it doesn't break. Mark it deprecated in a comment; remove in a later version.
+**Backwards-compat dropped in V1.1.0 (Q3-b):** the old `mailboxstatus/feather` JSON blob and `mailboxstatus/switch` echo-on-reed publishes are gone. The receiver no longer subscribes to `mailboxstatus/switch` either — HA dashboard must publish `EMPTY` (retained) directly to `mailbox/state` to clear the sticky state.
 
 ---
 
@@ -202,7 +205,7 @@ Heltec V3's OLED is 128×64. Compact, but enough.
 
 When state is `EMPTY` the big middle box becomes "—" and the status rows are dimmer. After 10 min idle the OLED powers off; press PRG to wake.
 
-Boot screen for the first 2 s: version string + IP address (matches the splash convention from your ESP32 Remote-project).
+Boot screen for the first 2 s: `Mailbox RX` / `by Marko` / `Booting…`. As of V1.0.8 the firmware version is **not** on the boot splash — it's always visible top-right on the main status row instead, so you can read it at any time without rebooting. (The "splash convention from your ESP32 Remote-project" still applies in spirit — the splash exists, just minus the version line.)
 
 ---
 
@@ -239,7 +242,7 @@ Total awake time: ~250 ms instead of DHT22's ~2 s. Big battery win.
 - Wake polarity bug fix (`HIGH` → `LOW` for PWR_DOWN wake).
 - Move LoRa `begin()` out of `loop()` into `setup()`.
 - Disable ADC before sleep (`ADCSRA &= ~_BV(ADEN);`).
-- WDT-based 6 h heartbeat using `WDTCSR` 8 s ticks × 2700.
+- WDT-based heartbeat: **48 h normal / 6 h low-battery boost** (when `vbat < 3.6 V`). One logical tick = **32 s** (V1.0.9 sender, energy option B), implemented by chaining 4× `LowPower.powerDown(SLEEP_8S, …)` since the 32u4's WDT prescaler caps at 8 s. Tick counters: `HB_TICKS_NORMAL` = 5400 (= 48 h / 32 s), `HB_TICKS_LOW_BATT` = 675 (= 6 h / 32 s). Reed events still wake immediately on INT2 LOW — the chained sleep helper bails out as soon as `reedFlag` is set, so reed-trigger latency stays ≤ 8 s worst-case.
 - Disable LiPo charge LED unless USB is plugged in (saves ~3 mA continuous).
 - Switch CSV → key=value packet format.
 
@@ -251,28 +254,30 @@ Total awake time: ~250 ms instead of DHT22's ~2 s. Big battery win.
 |---|---|---|
 | 1 | Packet format | **Key=value** (Option B) |
 | 2 | MQTT discovery | **Yes** — receiver self-publishes `homeassistant/.../config` on boot |
-| 3 | Heartbeat interval | **24 h** |
+| 3 | Heartbeat interval | **48 h** (originally 24 h, changed 2026-05-07) |
 | 4 | Tier 3 features | **OTA only** — buzzer / AES / web / HA-reboot deferred |
 
-**Implication of 24 h heartbeat:** receiver's `sender_alive` timeout must be 48–72 h (not 12 h, which was based on the 6 h heartbeat default). HA alert "sender dead?" will fire ~2 days after a real outage rather than half a day. Acceptable for a once/day mail event use case.
+**Implication of 48 h heartbeat:** receiver's `sender_alive` timeout is **98 h** (= 48 h heartbeat × 2 + 2 h slack), so it tolerates one missed heartbeat before flagging the link as broken. HA alert "sender dead?" will fire ~4 days after a real outage. Acceptable for a once/day mail event use case where the user notices physically before HA does.
 
 ## 8. Final scope locked (2026-05-02)
 
 | # | Question | Choice |
 |---|---|---|
 | 5 | BME280 module | 6-pin variant. Wire CSB → 3V3 (I2C mode), SDO → GND → I2C address **`0x76`**. |
-| 6 | Old MQTT topic compat | **Keep both old + new for one release.** V3 publishes new `mailbox/*` AND keeps `mailboxstatus/feather` + `mailboxstatus/switch`. Cull old in V3.1. |
-| 7 | Low-battery heartbeat boost | **Yes.** Heartbeat cadence is 24 h normally, but jumps to 6 h whenever `vbat < 3.6 V`. Early dead-battery warning at near-zero average airtime cost. |
+| 6 | Old MQTT topic compat | Pre-V1.1.0: kept both old + new (V3 published new `mailbox/*` AND legacy `mailboxstatus/feather` + `mailboxstatus/switch`). **V1.1.0 culled all legacy topics** (Q3-b) and additionally restructured the new tree into `mailbox/sender/*` / `mailbox/receiver/*` (Q1). |
+| 7 | Low-battery heartbeat boost | **Yes.** Heartbeat cadence is 48 h normally, but jumps to 6 h whenever `vbat < 3.6 V`. Early dead-battery warning at near-zero average airtime cost. |
 
 ### Implication on sender packet `type` field
 
-With the boosted-heartbeat behaviour, packet types become:
-- `0x01` reed event (mail arrived)
-- `0x02` heartbeat (24 h cadence — battery healthy)
-- `0x03` heartbeat low-battery (6 h cadence — vbat < 3.6 V)
-- `0x04` first boot
+With the boosted-heartbeat behaviour, packet types are:
+- `0x01` reed event (mail arrived) — receiver translates to label "mail"
+- `0x02` heartbeat (48 h cadence — battery healthy) — label "heartbeat"
+- `0x03` heartbeat low-battery (6 h cadence — vbat < 3.6 V) — label "heartbeat (low batt)"
+- `0x04` first boot — label "boot"
 
 HA can use the `type` field to fire different alerts: `0x01` → push notification, `0x03` → "replace battery soon" notification.
+
+The on-air wire format is still numeric (1 byte vs 8+ for the label string), but as of receiver V1.2.1 the receiver publishes the **label** to `mailbox/sender/last_packet_type` for human-readable display in HA.
 
 ---
 
@@ -303,8 +308,8 @@ Subscribe to `mailbox/state` (sticky). When it transitions `EMPTY → MAIL`, fir
                                                             (MAIL) ──► [trigger: 60s block] ──► [function: build msg w/ sensor data] ──► [pushover: "Postia laatikossa!"]
                                                             (EMPTY) ──► (nothing)
 
-[mqtt in: mailbox/sender_alive] ──► [filter: only on change to "false"] ──► [pushover: "Postilaatikon lähetin offline"]
-[mqtt in: mailbox/battery_percent] ──► [filter: < 15%] ──► [trigger: 24h block] ──► [pushover: "Akku heikko: X%"]
+[mqtt in: mailbox/sender/alive] ──► [filter: only on change to "false"] ──► [pushover: "Postilaatikon lähetin offline"]
+[mqtt in: mailbox/sender/battery_percent] ──► [filter: < 15%] ──► [trigger: 24h block] ──► [pushover: "Akku heikko: X%"]
 [mqtt in: mailbox/receiver/online] ──► [filter: only on change to "false"] ──► [pushover: "Vastaanotin offline"]
 ```
 
@@ -348,7 +353,7 @@ Two implementation styles:
 
 **Style A — Sleep through the lockout with WDT wake**
 - Detach reed interrupt
-- Sleep with WDT 8 s ticks × 8 (= 64 s)
+- Sleep with 32 s logical ticks × 2 (= 64 s) — V1.0.9 (was 8 s × 8 pre-V1.0.9)
 - Re-attach reed interrupt
 - Sleep waiting for reed
 - **Power cost: ~30 mAs per event** (mostly the radio TX)
@@ -408,5 +413,5 @@ Adding to §7 / §8:
 | 11 | Pushover priorities | Mail event = priority 0 (siren), all alerts (low batt, offline) = priority 1 (falling) |
 | 12 | Node-RED transition | Keep current node listening on the old `arduino/mailbox/switch` and `mailboxstatus/switch` topics during V3 flash, add `mailbox/state` as new input. Cull old after V3 verified. |
 | 13 | Pushover mail sound | **'magic'** (or 'pushover') — pleasant chime. Siren reserved for nothing (the alert tier uses 'falling' instead). |
-| 14 | Pushover mail body | `Postia laatikossa! <temp> °C, akku <battery_pct>%` — Node-RED change/template node pulls `mailbox/temp` and `mailbox/battery_percent` from flow context. |
+| 14 | Pushover mail body | `Postia laatikossa! <temp> °C, akku <battery_pct>%` — Node-RED change/template node pulls `mailbox/sender/temperature` and `mailbox/sender/battery_percent` from flow context (V1.1.0+ topic paths; pre-V1.1.0 used `mailbox/temp` and `mailbox/battery_percent`). |
 | 15 | Auto-clear sticky state | **None.** Manual only — HA dashboard button or Heltec PRG long-press. |

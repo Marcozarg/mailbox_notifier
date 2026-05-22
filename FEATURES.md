@@ -61,11 +61,11 @@ This is the canonical "what the system does" reference. When in doubt about an e
 - **Sleep mode:** AVR `PWR_DOWN`, ADC off, BOD off, ~5 µA chip + ~0.1 µA radio.
 - **Wake sources:**
   - Reed switch interrupt (INT2 LOW level) — lid-OPEN edge.
-  - WDT 8 s ticks for heartbeat scheduling.
-- **60 s reed-event lockout:** after every reed-triggered TX, eight WDT ticks (~64 s) of WDT-only sleep before reattaching the reed interrupt — prevents bouncy lid double-fire. Also handles "lid stuck open" cleanly: interrupt only re-attaches when the pin reads HIGH (lid actually closed) AND the lockout has elapsed.
+  - WDT ticks for heartbeat scheduling. One logical tick = 32 s (V1.0.9 sender), implemented by chaining 4× `LowPower.powerDown(SLEEP_8S, …)` since the 32u4's WDT prescaler caps at 8 s. The 4× chain bails out the moment a reed wake fires, so reed-event latency stays ≤ 8 s.
+- **60 s reed-event lockout:** after every reed-triggered TX, two 32 s WDT ticks (~64 s) of WDT-only sleep before reattaching the reed interrupt — prevents bouncy lid double-fire. Also handles "lid stuck open" cleanly: interrupt only re-attaches when the pin reads HIGH (lid actually closed) AND the lockout has elapsed.
 - **Heartbeat cadence:**
-  - Normal: 24 h (10800 × 8 s WDT ticks).
-  - Boost: 6 h (2700 ticks) when battery voltage drops below 3.6 V — early dead-battery warning.
+  - Normal: 48 h (5400 × 32 s WDT ticks).
+  - Boost: 6 h (675 ticks) when battery voltage drops below 3.6 V — early dead-battery warning.
   - Reassessed on every heartbeat using fresh battery reading.
 - **Sequence counter:** RAM-only, resets to 0 on every cold boot. Receiver sees a type=4 boot packet and adapts its dup-tracking.
 - **EEPROM persistence:** boot count + reed event count, with magic byte for first-boot detection.
@@ -83,7 +83,7 @@ This is the canonical "what the system does" reference. When in doubt about an e
 Key=value ASCII over LoRa. ~60–70 bytes typical. ~190 ms airtime at SF9/250 kHz.
 
 ```
-id=AA&type=1&seq=42&t=21.43&h=67&p=1013.2&v=3920&r=1&sok=1&boot=12&up=1234&br=cold
+id=AA&type=1&seq=42&t=21.43&h=67&p=1013.2&v=3920&r=1&sok=1&boot=12&up=1234&br=cold&fw=V1.0.9
 ```
 
 | Key | Meaning |
@@ -99,7 +99,8 @@ id=AA&type=1&seq=42&t=21.43&h=67&p=1013.2&v=3920&r=1&sok=1&boot=12&up=1234&br=co
 | `sok` | BME280 read OK flag (1 = fresh values, 0 = sensor failed, values are last-known cache) |
 | `boot` | EEPROM-backed boot count |
 | `up` | Uptime in minutes since this boot |
-| `br` | Boot reason (`cold` / `wdt` / `brownout` / `external`) — only in type=4 packets |
+| `br` | Boot reason (`power-on` / `external reset` / `watchdog` / `brown-out` / `normal`) — in EVERY packet from sender V1.1.0+ (was type=4-only pre-V1.1.0; the `normal` default replaces the unhelpful `unknown` since the 32u4 Caterina bootloader usually clears MCUSR before we can read it). Receiver publishes the value verbatim to `mailbox/sender/boot_reason`. |
+| `fw` | Sender firmware version string (V1.0.9+) — receiver publishes to `mailbox/sender/version` (was `mailbox/sender_fw` pre-V1.1.0) |
 
 Forward-compat by design: receiver ignores unknown keys. Sender can add new ones without coordinated reflashes.
 
@@ -112,24 +113,25 @@ Forward-compat by design: receiver ignores unknown keys. Sender can add new ones
 - WiFi auto-reconnect.
 - MQTT auto-reconnect with exponential backoff (5 s → 5 min cap), no `while(1)` halts.
 - Last-Will-and-Testament: retained `mailbox/receiver/online = false` if disconnected ungracefully.
-- ArduinoOTA (no password — trust the LAN). Hostname `arduinomailman`.
+- ArduinoOTA (no password — trust the LAN). Hostname `arduinomailman`. Arduino IDE prompts for a password on every network upload — **leave the field blank and press OK**, the receiver ignores whatever is typed. V1.1.1+ keeps the 30 s task-watchdog kicked from the OTA progress callback so multi-second flash erases don't trip it (manifested as `WinError 10054` mid-upload pre-V1.1.1), and the OLED shows live `OTA xx%`.
 - NTP: `fi.pool.ntp.org` + `pool.ntp.org`, Europe/Helsinki TZ with DST. Active wait up to 10 s in setup.
 - TX payload buffer raised to 1024 bytes (default 256 was silently dropping discovery JSONs).
 
 ### 5.2 Sticky `mailbox/state`
 
 - **Sticky design.** Reed event published to `mailbox/state = "MAIL"` (retained, QoS 1) only on the EMPTY → MAIL transition. Subsequent reed events while state is already MAIL are ignored at the receiver.
-- **Cleared by:** HA dashboard button (publishes `OFF` to `mailboxstatus/switch`, receiver subscribes), OR Heltec PRG long-press (≥ 1500 ms).
+- **Cleared by:** HA dashboard button (publishes `EMPTY` retained to `mailbox/state`; receiver subscribes and adopts via the V1.0.6 Fix B path), OR Heltec PRG long-press (≥ 1500 ms). The legacy `mailboxstatus/switch` route was removed in V1.1.0.
 - **60 s repeat-MAIL guard** on top of the sender's 60 s lockout — defence in depth.
 - **Dup-seq guard:** receiver rejects packets with same seq as the last one (except type=4 boot packets, which legitimately reset seq to 0).
-- **Sender-alive watchdog:** if no packet for 50 h (24 h heartbeat × 2 + 2 h slack), publishes retained `mailbox/sender_alive = false`.
+- **Sender-alive watchdog:** if no packet for 98 h (48 h heartbeat × 2 + 2 h slack), publishes retained `mailbox/sender/alive = false` (was `mailbox/sender_alive` pre-V1.1.0).
 
 ### 5.3 OLED layout
 
-- Top row: `WiFi` / `MQTT` connection status + NTP-synced clock.
+- Top row: `WiFi` / `MQTT` connection status + NTP-synced clock on the left, receiver `FW_VERSION` right-justified (V1.0.8+).
 - Big middle: `MAIL` (when state on) or `—` (when empty).
 - Bottom rows: latest packet sensor values + RSSI/SNR/seq.
 - Auto-off after 10 min idle, woken by PRG short-press.
+- Boot splash: `Mailbox RX` / `by Marko` / `Booting...` (version moved off boot splash in V1.0.8 since it's now always visible on the main screen).
 
 ### 5.4 PRG button
 
@@ -142,37 +144,42 @@ Forward-compat by design: receiver ignores unknown keys. Sender can add new ones
 
 ### 6.1 MQTT discovery
 
-Receiver publishes 17 retained discovery configs to `homeassistant/.../config` on every boot. HA dedups by `unique_id`. All entities grouped under one device card "Mailbox sensor."
+Receiver publishes 18 retained discovery configs to `homeassistant/.../config` on every boot. HA dedups by `unique_id`. All entities grouped under one device card "Mailbox" (V1.1.0+; was "Mailbox sensor" pre-V1.1.0).
+
+Naming scheme (V1.2.0+): every entity_id follows the pattern **`<platform>.mailbox_<side>_<thing>`** where `<side>` is `sender` (data the Feather produces) or `receiver` (data the receiver measures). The discovery payload itself sends only the **un-prefixed `<side>_<thing>`** part — HA composes the `mailbox_` prefix automatically from the device slug (V1.1.0/V1.1.1 sent the doubled "mailbox_mailbox_*" because the prefix was redundantly included in both fields). The headline `mailbox_state` represents the device as a whole.
 
 | Entity | Type | Device class | Notes |
 |---|---|---|---|
 | `binary_sensor.mailbox_state` | binary | occupancy | `MAIL` / `EMPTY`, retained, sticky |
-| `sensor.mailbox_temp` | sensor | temperature | °C, BME280 |
-| `sensor.mailbox_humidity` | sensor | humidity | %, BME280 |
-| `sensor.mailbox_pressure` | sensor | pressure | hPa, BME280 |
-| `sensor.mailbox_battery_voltage` | sensor | voltage | V, diagnostic |
-| `sensor.mailbox_battery_percent` | sensor | battery | %, computed from LiPo curve |
-| `sensor.mailbox_msg_count` | sensor | — | seq counter, diagnostic |
-| `sensor.mailbox_rssi` | sensor | signal_strength | dBm, diagnostic |
-| `sensor.mailbox_snr` | sensor | — | dB, diagnostic |
-| `sensor.mailbox_last_seen` | sensor | timestamp | ISO 8601 NTP timestamp, retained |
-| `sensor.mailbox_last_packet_type` | sensor | — | 1/2/3/4, diagnostic |
-| `sensor.mailbox_boot_count` | sensor | — | EEPROM-backed, diagnostic |
-| `sensor.mailbox_boot_reason` | sensor | — | cold/wdt/brownout/external, diagnostic |
+| `sensor.mailbox_sender_temperature` | sensor | temperature | °C, BME280 |
+| `sensor.mailbox_sender_humidity` | sensor | humidity | %, BME280 |
+| `sensor.mailbox_sender_pressure` | sensor | pressure | hPa, BME280 |
+| `sensor.mailbox_sender_battery_voltage` | sensor | voltage | V, diagnostic |
+| `sensor.mailbox_sender_battery` | sensor | battery | %, computed from LiPo curve |
+| `sensor.mailbox_sender_packet_seq` | sensor | — | seq counter, diagnostic |
+| `sensor.mailbox_sender_last_packet_type` | sensor | — | mail / heartbeat / heartbeat (low batt) / boot (V1.2.1+ — was numeric 1/2/3/4 pre-V1.2.1), diagnostic |
+| `sensor.mailbox_sender_boot_count` | sensor | — | EEPROM-backed, diagnostic |
+| `sensor.mailbox_sender_boot_reason` | sensor | — | power-on / external reset / watchdog / brown-out / normal (V1.1.0+ sender — was cold/wdt/brownout/external/unknown pre-V1.1.0; also now published on every packet so HA never shows "Unknown"), diagnostic |
 | `binary_sensor.mailbox_sender_alive` | binary | connectivity | timeout-driven, diagnostic |
+| `sensor.mailbox_sender_version` | sensor | — | sender FW string, diagnostic (V1.0.8+) |
+| `sensor.mailbox_receiver_rssi` | sensor | signal_strength | dBm of last RX packet, diagnostic |
+| `sensor.mailbox_receiver_snr` | sensor | — | dB of last RX packet, diagnostic |
+| `sensor.mailbox_receiver_last_seen` | sensor | timestamp | ISO 8601 NTP timestamp, retained |
 | `binary_sensor.mailbox_receiver_online` | binary | connectivity | LWT-driven, diagnostic |
 | `sensor.mailbox_receiver_wifi_rssi` | sensor | signal_strength | dBm, diagnostic |
-| `sensor.mailbox_receiver_uptime` | sensor | duration | s, diagnostic |
+| `sensor.mailbox_receiver_uptime` | sensor | duration | d (days, 2 decimals), diagnostic |
 
-Removed in V1.0.4 per user feedback: `binary_sensor.mailbox_lid` (lid status was useless without close-edge TX, which was rolled back).
+Removed in V1.0.4: `binary_sensor.mailbox_lid` (close-edge TX rolled back per user feedback).
+Renamed in V1.1.0: every `sensor.mailbox_*` entity except the headline `mailbox_state` (sender_/receiver_ scheme introduced).
+Re-slugged in V1.2.0: discovery payload no longer includes the "mailbox_" prefix — HA prepends it via device slug. Net entity_id is the same as the V1.1.0 *intent*; the V1.1.0/V1.1.1 firmware accidentally produced `sensor.mailbox_mailbox_*` for fresh entities created under modern HA. V1.2.0 fixes the discovery so newly-created entities come out clean. Existing doubled-name entities go "Unavailable" — one bulk delete in **Settings → Devices & services → MQTT → entities** (filter "unavailable", search "mailbox_mailbox") clears them.
 
-### 6.2 Backwards-compat MQTT (V1.0.1+)
+### 6.2 MQTT topic tree
 
-Receiver also publishes the V2_real-shaped topics so the original HA `configuration.yaml` `mqtt:` block keeps working:
+V1.1.0 restructure — all topics now namespaced. Pre-V1.1.0 flat topics (`mailbox/temp`, `mailbox/rssi`, `mailbox/sender_fw`, etc.) and the legacy `mailboxstatus/*` compat tree are **gone** (no aliases kept).
 
-- `mailboxstatus/switch` → `"ON"` on each reed-event state-transition (not retained).
-- `mailboxstatus/feather` → JSON `{"temp", "humid", "lipo" (volts), "msgcount", "rssi", "snr"}` on every received packet.
-
+- **Headline:** `mailbox/state` — `"MAIL"` / `"EMPTY"`, retained, bidirectional. Receiver publishes on reed events + PRG long-press. HA dashboard may publish `"EMPTY"` (retained) directly to clear.
+- **Sender-derived (RX → HA):** `mailbox/sender/temperature`, `mailbox/sender/humidity`, `mailbox/sender/pressure`, `mailbox/sender/battery_voltage`, `mailbox/sender/battery_percent`, `mailbox/sender/packet_seq`, `mailbox/sender/last_packet_type`, `mailbox/sender/boot_count`, `mailbox/sender/boot_reason`, `mailbox/sender/sensor_ok` (side channel, no HA entity), `mailbox/sender/alive`, `mailbox/sender/version`.
+- **Receiver-measured (RX → HA):** `mailbox/receiver/rssi`, `mailbox/receiver/snr`, `mailbox/receiver/last_seen`, `mailbox/receiver/online`, `mailbox/receiver/wifi_rssi`, `mailbox/receiver/uptime`.
 
 ### 6.3 Lovelace dashboard
 
@@ -183,7 +190,7 @@ Receiver also publishes the V2_real-shaped topics so the original HA `configurat
 - Subscribes to `mailbox/state`, fires on EMPTY→MAIL transition.
 - Pushover sound: `magic` (chime, not siren).
 - Priority 0 for mail; priority 1 + `falling` for sender/receiver-offline and low-battery alerts.
-- Body includes live `temp` and `battery_percent`: e.g. `"Postia laatikossa! 7.2 °C, akku 78%"`.
+- Body subscribes to `mailbox/sender/temperature` and `mailbox/sender/battery_percent` (V1.1.0+ topic paths) for live values: e.g. `"Postia laatikossa! 7.2 °C, akku 78%"`. **Pre-V1.1.0 flows** subscribing to `mailbox/temp` and `mailbox/battery_percent` need updating.
 - Trigger node 60 s block as third dedup layer.
 - No auto-clear — manual via dashboard or PRG long-press.
 
@@ -227,7 +234,7 @@ Defence in depth — same 60 s window applied at each stage:
 | `Vx.y` (minor) | Feature change, behaviour tweak, UX polish. |
 | `Vx` (major) | Hardware change, MCU swap, packet format break. |
 
-Every code file starts with `// Vmajor.minor[.patch] — YYYY-MM-DD — description`. Runtime version strings (boot SLOG, OLED splash, MQTT discovery `sw_version`) derive from a single `#define FW_VERSION "Vx.y.z"` macro at the top of each file — version drift between the header and runtime can't happen.
+Every code file starts with `// Vmajor.minor[.patch] — YYYY-MM-DD — description`. Runtime version strings (boot SLOG, OLED main-screen top-right corner, MQTT discovery `sw_version`) derive from a single `#define FW_VERSION "Vx.y.z"` macro at the top of each file — version drift between the header and runtime can't happen. (Pre-V1.0.8 the version was on the boot splash instead of the main screen.)
 
 ---
 
@@ -239,7 +246,7 @@ From `RECEIVER_V3_PLAN.md` §7 / §8 and `project_decisions.md` in agent memory:
 - LoRa library: RadioLib on receiver (via `heltec_unofficial`), Sandeep Mistry `LoRa.h` on sender.
 - Packet format: key=value ASCII (chosen over CSV / binary struct).
 - HA integration: MQTT discovery (chosen over hand-written sensor YAML).
-- Heartbeat: 24 h normal / 6 h when low-batt.
+- Heartbeat: 48 h normal / 6 h when low-batt (was 24 h normal until 2026-05-07).
 - Tier 3 features in V3: OTA only. Buzzer / AES / web page / HA-reboot deferred.
 - BME280: 6-pin module, CSB→3V, SDO→GND → address 0x76.
 - Mail-state auto-clear: none — manual only via HA button or PRG long-press.
