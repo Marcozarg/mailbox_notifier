@@ -1,4 +1,22 @@
-// V1.2.1 — 2026-05-22 — Mailbox receiver V3 (Heltec WiFi LoRa 32 V3, RadioLib via heltec_unofficial)
+// V1.2.3 — 2026-05-22 — Mailbox receiver V3 (Heltec WiFi LoRa 32 V3, RadioLib via heltec_unofficial)
+//
+// V1.2.3 changes:
+//   • ArduinoOTA hostname brought in line with the WiFi hostname. Both now
+//     use the same host part `mailbox`, sourced from a single `WIFI_HOSTNAME`
+//     macro near the top of the file.
+//        WiFi DHCP hostname: `mailbox.<SECRET_DOMAINNAME>` (e.g. `mailbox.homenet.io`)
+//        ArduinoOTA / mDNS:  `mailbox` (advertised as `mailbox.local`)
+//     Arduino IDE network port list now reads `mailbox at <IP>` instead of
+//     `arduinomailman at <IP>`. After OTA-flashing V1.2.3 the IDE will
+//     repopulate the port list — pick the new `mailbox` entry from then on.
+//
+// V1.2.2 changes:
+//   • WiFi DHCP hostname changed from `arduinomailman` to
+//     `mailbox.<SECRET_DOMAINNAME>` (composed at compile time via C
+//     string-literal concatenation). With `SECRET_DOMAINNAME "homenet.io"`
+//     the receiver now shows up in the router's DHCP lease table as
+//     `mailbox.homenet.io`. The new secret is documented in
+//     `arduino_secrets.h.example`.
 //
 // V1.2.1 changes:
 //   • `mailbox_sender_last_packet_type` now publishes a human-readable label
@@ -188,7 +206,13 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V1.2.1"
+#define FW_VERSION "V1.2.3"
+
+// Single source of truth for the device's host part. Combined with
+// SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
+// used standalone as the ArduinoOTA mDNS name ("mailbox.local"). Change
+// here once and both stay in sync.
+#define WIFI_HOSTNAME "mailbox"
 //
 // Listens for LoRa packets from the mailbox sender (Adafruit Feather 32u4 LoRa) on EU 868 MHz,
 // parses the key=value payload, publishes each field to its own MQTT topic, and drives a sticky
@@ -512,7 +536,7 @@ void setup() {
   // mid-upload and the chip resets (manifests as WinError 10054 in Arduino
   // IDE at ~50 %). Kicking the WDT from onProgress (fires every few KB) keeps
   // it happy for the full upload while still catching real firmware hangs.
-  ArduinoOTA.setHostname("arduinomailman");
+  ArduinoOTA.setHostname(WIFI_HOSTNAME);   // V1.2.3 — was "arduinomailman"
   ArduinoOTA.onStart([]() {
     LOG("ota", "OTA update starting — pausing main loop");
     // V1.1.1: silence the LoRa interrupt during OTA. RadioLib's DIO1 ISR
@@ -695,10 +719,16 @@ void loop() {
 // WiFi connect — blocks until joined or WDT bites.
 ////////////////////////////////////////////////////////////////////////////////
 void connectWifi() {
-  WiFi.setHostname("arduinomailman");
+  // V1.2.2: hostname composed at compile time from WIFI_HOSTNAME + the user's
+  // LAN domain in secrets. Result e.g. "mailbox.homenet.io". Whether the
+  // router actually registers this into local DNS depends on the DHCP server
+  // config, but at minimum the FQDN shows up in lease tables. V1.2.3 keeps
+  // the OTA mDNS name (`WIFI_HOSTNAME` alone, i.e. "mailbox.local") aligned
+  // so the IDE port list reads `mailbox at <IP>`.
+  WiFi.setHostname(WIFI_HOSTNAME "." SECRET_DOMAINNAME);
   WiFi.mode(WIFI_STA);
   WiFi.begin(SECRET_SSID, SECRET_PASS);
-  LOG("wifi", "Connecting to %s", SECRET_SSID);
+  LOG("wifi", "Connecting to %s (hostname %s.%s)", SECRET_SSID, WIFI_HOSTNAME, SECRET_DOMAINNAME);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     esp_task_wdt_reset();         // keep the watchdog quiet during the join

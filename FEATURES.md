@@ -113,7 +113,7 @@ Forward-compat by design: receiver ignores unknown keys. Sender can add new ones
 - WiFi auto-reconnect.
 - MQTT auto-reconnect with exponential backoff (5 s → 5 min cap), no `while(1)` halts.
 - Last-Will-and-Testament: retained `mailbox/receiver/online = false` if disconnected ungracefully.
-- ArduinoOTA (no password — trust the LAN). Hostname `arduinomailman`. Arduino IDE prompts for a password on every network upload — **leave the field blank and press OK**, the receiver ignores whatever is typed. V1.1.1+ keeps the 30 s task-watchdog kicked from the OTA progress callback so multi-second flash erases don't trip it (manifested as `WinError 10054` mid-upload pre-V1.1.1), and the OLED shows live `OTA xx%`.
+- ArduinoOTA (no password — trust the LAN). Host part `mailbox` (V1.2.3+; pre-V1.2.3 was `arduinomailman`). Advertised on mDNS as `mailbox.local`; Arduino IDE shows it as `mailbox at <IP>` in the network ports list. WiFi DHCP hostname is the FQDN `mailbox.<SECRET_DOMAINNAME>` (e.g. `mailbox.homenet.io`) so the device shows up tidy in router lease tables too. Arduino IDE prompts for a password on every network upload — **leave the field blank and press OK**, the receiver ignores whatever is typed. V1.1.1+ keeps the 30 s task-watchdog kicked from the OTA progress callback so multi-second flash erases don't trip it (manifested as `WinError 10054` mid-upload pre-V1.1.1), and the OLED shows live `OTA xx%`.
 - NTP: `fi.pool.ntp.org` + `pool.ntp.org`, Europe/Helsinki TZ with DST. Active wait up to 10 s in setup.
 - TX payload buffer raised to 1024 bytes (default 256 was silently dropping discovery JSONs).
 

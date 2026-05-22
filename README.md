@@ -92,7 +92,7 @@ Pin maps and wiring details: [`docs/SENDER_HARDWARE.md`](docs/SENDER_HARDWARE.md
 
 7. **Drop in the dashboard** from `home_assistant/HA_mailbox_dashboard.yaml` and the Pushover flow from `home_assistant/nodered_pushover_flow.json`.
 
-8. **Subsequent updates can go over WiFi (OTA).** Once the receiver is running, Arduino IDE will list `arduinomailman at <IP>` as a network port. Pick it, click Upload. The IDE will prompt for a password — **leave the field blank** and press OK; the receiver has no password set (per the locked design decision to trust the LAN). The OLED will show live `OTA xx%` during the upload.
+8. **Subsequent updates can go over WiFi (OTA).** Once the receiver is running, Arduino IDE will list `mailbox at <IP>` as a network port (mDNS name `mailbox.local`; pre-V1.2.3 firmware listed itself as `arduinomailman`). Pick it, click Upload. The IDE will prompt for a password — **leave the field blank** and press OK; the receiver has no password set (per the locked design decision to trust the LAN). The OLED will show live `OTA xx%` during the upload.
 
 ## Documentation
 
