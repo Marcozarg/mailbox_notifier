@@ -1,3 +1,28 @@
+// V1.2.4 — 2026-05-25 — BUG FIX: re-subscribe to T_STATE on every MQTT reconnect
+//
+// V1.2.4 changes:
+//   • BUG FIX — After any Mosquitto restart (e.g. HA upgrade), the receiver
+//     lost its subscription to `mailbox/state` and never got it back. Root
+//     cause: MQTT cleanSession=true means the broker discards all
+//     subscriptions for this client ID on disconnect. connectMqtt() was
+//     called on every reconnect but only published T_R_ONLINE="true" —
+//     it never re-subscribed. The onMqttMessage handler was therefore
+//     never called after a reconnect, so the local `mailState` flag
+//     drifted out of sync with the broker:
+//       1) HA dashboard "clear" (publishes retained EMPTY to mailbox/state)
+//          was silently ignored — receiver still believed state was MAIL.
+//       2) Next real reed event hit `!mailState == false`, was logged as
+//          "reed event ignored (already MAIL or guarded)", and never
+//          published to HA. Symptom: OLED didn't show MAIL, state stayed
+//          stuck.
+//     Fix: move `mqttClient.subscribe(T_STATE)` into connectMqtt() so it
+//     fires on every connect, not just at boot. The broker immediately
+//     replays the retained mailbox/state value, which onMqttMessage() picks
+//     up on the first poll() call and syncs mailState correctly.
+//   • Cleanup: removed the two now-redundant subscribe(T_STATE) calls from
+//     setup() — connectMqtt() already handles it. onMessage registration
+//     stays in setup() (it persists across reconnects, only needed once).
+//
 // V1.2.3 — 2026-05-22 — Mailbox receiver V3 (Heltec WiFi LoRa 32 V3, RadioLib via heltec_unofficial)
 //
 // V1.2.3 changes:
@@ -206,7 +231,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V1.2.3"
+#define FW_VERSION "V1.2.4"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -605,15 +630,14 @@ void setup() {
   ArduinoOTA.begin();
   LOG("ota", "OTA ready @ %s", WiFi.localIP().toString().c_str());
 
-  connectMqtt();           // includes LWT setup
+  connectMqtt();           // includes LWT setup + T_STATE subscribe (V1.2.4)
   publishDiscoveryAll();   // 18 entities × discovery JSON; HA dedups by unique_id
 
-  // V1.1.0: only T_STATE is subscribed now. HA clears the sticky state by
-  // publishing "EMPTY" (retained) directly to mailbox/state, which also lands
-  // here — see V1.0.6 Fix B in onMqttMessage. The retained MAIL/EMPTY value
-  // also replays on this subscription at boot, restoring our local mailState
-  // from the broker without explicit code.
-  mqttClient.subscribe(T_STATE);
+  // Register the MQTT message handler once — it is stored in the client object
+  // and persists across reconnects, so this only needs to happen at boot.
+  // T_STATE subscription lives in connectMqtt() (V1.2.4) so it is re-registered
+  // on every reconnect. The broker replays the retained mailbox/state value on
+  // the first poll() in loop(), syncing mailState before any packet arrives.
   mqttClient.onMessage(onMqttMessage);
 
   // LoRa init — uses the Heltec library's pre-wired SX1262 pin map.
@@ -624,10 +648,6 @@ void setup() {
   RADIOLIB_OR_HALT(radio.setSpreadingFactor(SPREADING_FACTOR));
   RADIOLIB_OR_HALT(radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF));
   LOG("lora", "RX armed @ %.2f MHz BW %.1f kHz SF%d", FREQUENCY, BANDWIDTH, SPREADING_FACTOR);
-
-  // Restore sticky state from broker — the retained mailbox/state message will
-  // arrive after subscription. Until it does, we display "—" (unknown).
-  mqttClient.subscribe(T_STATE);
 
   lastDisplayActivityMs = millis();
   lastDiagPublishMs     = millis();
@@ -765,6 +785,18 @@ void connectMqtt() {
   mqttClient.beginMessage(T_R_ONLINE, true, 1);
   mqttClient.print("true");
   mqttClient.endMessage();
+
+  // V1.2.4 BUG FIX: re-subscribe to T_STATE on every (re)connect.
+  // MQTT cleanSession=true causes the broker to discard all subscriptions for
+  // this client ID on disconnect. Without re-subscribing here the receiver
+  // goes deaf to mailbox/state after any Mosquitto restart: it stops receiving
+  // the HA dashboard EMPTY clear, mailState drifts out of sync, and the next
+  // legitimate reed event is silently dropped ("reed event ignored — already
+  // MAIL or guarded"). The broker replays the retained mailbox/state value
+  // immediately on subscribe; onMqttMessage() picks it up on the next poll()
+  // and syncs mailState — so the receiver always knows the true state.
+  mqttClient.subscribe(T_STATE);
+  LOG("mqtt", "Subscribed to %s", T_STATE);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

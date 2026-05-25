@@ -111,7 +111,7 @@ Forward-compat by design: receiver ignores unknown keys. Sender can add new ones
 ### 5.1 Connectivity
 
 - WiFi auto-reconnect.
-- MQTT auto-reconnect with exponential backoff (5 s → 5 min cap), no `while(1)` halts.
+- MQTT auto-reconnect with exponential backoff (5 s → 5 min cap), no `while(1)` halts. On every successful reconnect the receiver re-subscribes to `mailbox/state` (V1.2.4+; pre-V1.2.4 the subscription was lost after any Mosquitto restart, causing HA dashboard clears to be silently ignored and subsequent reed events to be dropped as "already MAIL").
 - Last-Will-and-Testament: retained `mailbox/receiver/online = false` if disconnected ungracefully.
 - ArduinoOTA (no password — trust the LAN). Host part `mailbox` (V1.2.3+; pre-V1.2.3 was `arduinomailman`). Advertised on mDNS as `mailbox.local`; Arduino IDE shows it as `mailbox at <IP>` in the network ports list. WiFi DHCP hostname is the FQDN `mailbox.<SECRET_DOMAINNAME>` (e.g. `mailbox.homenet.io`) so the device shows up tidy in router lease tables too. Arduino IDE prompts for a password on every network upload — **leave the field blank and press OK**, the receiver ignores whatever is typed. V1.1.1+ keeps the 30 s task-watchdog kicked from the OTA progress callback so multi-second flash erases don't trip it (manifested as `WinError 10054` mid-upload pre-V1.1.1), and the OLED shows live `OTA xx%`.
 - NTP: `fi.pool.ntp.org` + `pool.ntp.org`, Europe/Helsinki TZ with DST. Active wait up to 10 s in setup.
@@ -120,7 +120,7 @@ Forward-compat by design: receiver ignores unknown keys. Sender can add new ones
 ### 5.2 Sticky `mailbox/state`
 
 - **Sticky design.** Reed event published to `mailbox/state = "MAIL"` (retained, QoS 1) only on the EMPTY → MAIL transition. Subsequent reed events while state is already MAIL are ignored at the receiver.
-- **Cleared by:** HA dashboard button (publishes `EMPTY` retained to `mailbox/state`; receiver subscribes and adopts via the V1.0.6 Fix B path), OR Heltec PRG long-press (≥ 1500 ms). The legacy `mailboxstatus/switch` route was removed in V1.1.0.
+- **Cleared by:** HA dashboard button (publishes `EMPTY` retained to `mailbox/state`; receiver subscribes and adopts via the V1.0.6 Fix B path), OR Heltec PRG long-press (≥ 1500 ms). The legacy `mailboxstatus/switch` route was removed in V1.1.0. The subscription to `mailbox/state` is now restored on every MQTT reconnect (V1.2.4+) so dashboard clears are never silently lost after a Mosquitto restart.
 - **60 s repeat-MAIL guard** on top of the sender's 60 s lockout — defence in depth.
 - **Dup-seq guard:** receiver rejects packets with same seq as the last one (except type=4 boot packets, which legitimately reset seq to 0).
 - **Sender-alive watchdog:** if no packet for 98 h (48 h heartbeat × 2 + 2 h slack), publishes retained `mailbox/sender/alive = false` (was `mailbox/sender_alive` pre-V1.1.0).
