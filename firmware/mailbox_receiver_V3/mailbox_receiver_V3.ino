@@ -1,3 +1,25 @@
+// V1.3.0 — 2026-06-02 — Features: HA reboot command, packet loss counter, freq error sensor
+//
+// V1.3.0 changes:
+//   • NEW — HA reboot command: receiver subscribes to `mailbox/cmd/reboot`; any
+//     incoming message triggers ESP.restart(). A `button` entity (device_class restart)
+//     is published via MQTT discovery so HA exposes it as a one-tap button on the
+//     Mailbox device card. Useful for remote recovery without physical access.
+//   • NEW — Packet loss counter: after the dedup check in parseAndDispatch(), gaps
+//     in the sender's seq number (uint8 wrapping arithmetic) are counted and
+//     accumulated in `packetLossCount`. Published to `mailbox/receiver/packet_loss`
+//     (retained, total_increasing) every time a packet is processed. Helps detect
+//     LoRa link degradation before it causes complete delivery failures. type=4 boot
+//     packets are excluded because the sender legitimately resets seq to 0 on boot.
+//   • NEW — Frequency error sensor: after each RX, `radio.getFrequencyError()` is
+//     published to `mailbox/receiver/freq_error` (Hz, measurement). Allows HA to
+//     plot sender crystal drift vs. temperature over time.
+//   • INTERNAL — `publishOneDiscovery()` now treats `stateTopic` as optional: if
+//     null or empty the `state_topic` field is omitted from the JSON. This is needed
+//     for the new `button` platform (which uses `command_topic` instead). Trailing
+//     comma moved from `object_id` line to each consumer field so the JSON stays
+//     valid when state_topic is absent. Entity count: 18 → 21.
+//
 // V1.2.6 — 2026-06-02 — BUG FIX: do not gate state on r= field for type=1 packets
 //
 // V1.2.6 changes:
@@ -265,7 +287,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V1.2.6"
+#define FW_VERSION "V1.3.0"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -364,6 +386,11 @@ const char T_R_LAST_SEEN[]    = "mailbox/receiver/last_seen";
 const char T_R_ONLINE[]       = "mailbox/receiver/online";          // LWT-retained
 const char T_R_WIFI_RSSI[]    = "mailbox/receiver/wifi_rssi";
 const char T_R_UPTIME[]       = "mailbox/receiver/uptime";
+const char T_R_PACKET_LOSS[]  = "mailbox/receiver/packet_loss";     // V1.3.0: cumulative missed packets
+const char T_R_FREQ_ERROR[]   = "mailbox/receiver/freq_error";      // V1.3.0: sender crystal drift, Hz
+
+// HA → receiver commands (V1.3.0).
+const char T_CMD_REBOOT[]     = "mailbox/cmd/reboot";               // any payload → ESP.restart()
 
 // No HA→RX clear-topic anymore. HA dashboard publishes "EMPTY" (retained)
 // directly to `mailbox/state`; the existing T_STATE subscription + V1.0.6
@@ -417,6 +444,11 @@ unsigned long lastMailTransitionMs = 0;       // for STATE_REPEAT_GUARD_MS
 // V1.2.5: set when a type=1 reed event arrives while MQTT is disconnected.
 // Cleared (and MAIL published) inside connectMqtt() on the next successful connect.
 bool          pendingMailState = false;
+
+// V1.3.0: cumulative count of packets inferred lost (gaps in sender seq number).
+// Resets to 0 on receiver reboot only — not on sender boot (type=4 is excluded
+// from the gap check since the sender legitimately resets seq to 0 on every boot).
+uint32_t      packetLossCount  = 0;
 
 // Last decoded packet — kept so the OLED + diagnostic publishes can display them
 // even between RX events.
@@ -497,6 +529,14 @@ void onMqttMessage(int messageSize) {
     payload += (char) mqttClient.read();
   }
   LOG("mqtt", "RX %s = %s", topic.c_str(), payload.c_str());
+
+  // V1.3.0: remote reboot command — any payload triggers restart.
+  if (topic == T_CMD_REBOOT) {
+    LOG("cmd", "Reboot command received — restarting in 100 ms");
+    delay(100);   // let the serial log flush before reset
+    ESP.restart();
+    return;
+  }
 
   if (topic == T_STATE) {
     // V1.0.6 fix B: keep mailState in sync with the broker's retained value.
@@ -851,6 +891,10 @@ void connectMqtt() {
   // and syncs mailState — so the receiver always knows the true state.
   mqttClient.subscribe(T_STATE);
   LOG("mqtt", "Subscribed to %s", T_STATE);
+
+  // V1.3.0: subscribe to the remote-reboot command topic.
+  mqttClient.subscribe(T_CMD_REBOOT);
+  LOG("mqtt", "Subscribed to %s", T_CMD_REBOOT);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -884,8 +928,9 @@ void publishOneDiscovery(const char* platform, const char* uniqueId,
   String json  = "{";
   json += "\"name\":\"" + String(name) + "\",";
   json += "\"unique_id\":\"" + String(uniqueId) + "\",";
-  json += "\"object_id\":\"" + String(uniqueId) + "\",";
-  json += "\"state_topic\":\"" + String(stateTopic) + "\"";
+  json += "\"object_id\":\"" + String(uniqueId) + "\"";
+  // V1.3.0: state_topic is optional — button entities use command_topic instead.
+  if (stateTopic && *stateTopic) json += ",\"state_topic\":\"" + String(stateTopic) + "\"";
   if (deviceClass    && *deviceClass)    json += ",\"device_class\":\"" + String(deviceClass) + "\"";
   if (unit           && *unit)           json += ",\"unit_of_measurement\":\"" + String(unit) + "\"";
   if (stateClass     && *stateClass)     json += ",\"state_class\":\"" + String(stateClass) + "\"";
@@ -903,7 +948,7 @@ void publishDiscoveryAll() {
   // prefix — HA prepends the device name "Mailbox" automatically. This avoids
   // the doubled `sensor.mailbox_mailbox_*` entity_id that modern HA produced
   // for the V1.1.0/V1.1.1 discovery payloads.
-  LOG("disc", "Publishing 18 entity configs (V1.2.0 no-prefix scheme)");
+  LOG("disc", "Publishing 21 entity configs (V1.3.0: +reboot button, +packet_loss, +freq_error)");
 
   // ---- Headline ------------------------------------------------------------
   // binary_sensor.mailbox_state — sticky, payload MAIL/EMPTY.
@@ -961,6 +1006,18 @@ void publishDiscoveryAll() {
                       T_R_WIFI_RSSI, "signal_strength", "dBm", "measurement", "diagnostic");
   publishOneDiscovery("sensor", "receiver_uptime", "Receiver uptime",
                       T_R_UPTIME, "duration", "d", "total_increasing", "diagnostic");
+
+  // ---- V1.3.0 additions ---------------------------------------------------
+  // Reboot button — HA sends any payload to T_CMD_REBOOT; receiver calls ESP.restart().
+  publishOneDiscovery("button", "receiver_reboot", "Reboot receiver",
+                      nullptr, "restart", nullptr, nullptr, "config",
+                      "\"command_topic\":\"mailbox/cmd/reboot\"");
+
+  publishOneDiscovery("sensor", "receiver_packet_loss", "Receiver packet loss",
+                      T_R_PACKET_LOSS, nullptr, nullptr, "total_increasing", "diagnostic");
+
+  publishOneDiscovery("sensor", "receiver_freq_error", "Receiver freq error",
+                      T_R_FREQ_ERROR, nullptr, "Hz", "measurement", "diagnostic");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1001,6 +1058,19 @@ void parseAndDispatch(const String& payload, float rssi, float snr) {
   if (pktType != 4 && lastSeq >= 0 && seq == (uint8_t) lastSeq) {
     LOG("dedup", "duplicate seq %u, dropping", seq);
     return;
+  }
+
+  // V1.3.0: packet loss counter — count gaps in sender seq (uint8 wrapping arithmetic).
+  // Excluded for type=4 (sender boot resets seq to 0 legitimately). lastSeq == -1
+  // (first packet ever) is also excluded: no gap to measure.
+  if (pktType != 4 && lastSeq >= 0) {
+    uint8_t expected = (uint8_t)((uint8_t) lastSeq + 1);
+    if (seq != expected) {
+      uint8_t lost = (uint8_t)(seq - expected);   // wrapping subtraction handles rollover
+      packetLossCount += lost;
+      LOG("loss", "%u packet(s) lost (expected seq %u got %u, cumulative=%lu)",
+          lost, expected, seq, packetLossCount);
+    }
   }
 
   // Decode all fields. Missing fields keep their previous values — useful when
@@ -1112,6 +1182,10 @@ void publishOnePacket() {
     strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tmInfo);
     publishOne(T_R_LAST_SEEN, String(isoBuf), true);
   }
+
+  // V1.3.0: packet loss counter + frequency error.
+  publishOne(T_R_PACKET_LOSS, String(packetLossCount), true);
+  publishOne(T_R_FREQ_ERROR,  String(radio.getFrequencyError(), 1));
 
   // V1.1.0 (Q3-b): the V2_real `mailboxstatus/feather` JSON-blob publish has
   // been removed. All values are now first-class HA entities on their own

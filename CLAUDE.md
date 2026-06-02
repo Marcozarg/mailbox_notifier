@@ -26,7 +26,7 @@ Feather 32u4 ── LoRa 866 MHz SF9 BW250 ──► Heltec V3 ── WiFi/MQTT 
 | Component | Version | File |
 |---|---|---|
 | Sender | V1.1.0 | `firmware/mailbox_sender_V3/mailbox_sender_V3.ino` |
-| Receiver | V1.2.6 | `firmware/mailbox_receiver_V3/mailbox_receiver_V3.ino` |
+| Receiver | V1.3.0 | `firmware/mailbox_receiver_V3/mailbox_receiver_V3.ino` |
 
 ---
 
@@ -155,6 +155,9 @@ mailbox/receiver/last_seen           ← ISO 8601 NTP timestamp
 mailbox/receiver/online              ← retained LWT, true/false
 mailbox/receiver/wifi_rssi
 mailbox/receiver/uptime              ← days, 2 decimals
+mailbox/receiver/packet_loss         ← retained, cumulative missed-packet count (V1.3.0)
+mailbox/receiver/freq_error          ← Hz, sender crystal drift per packet (V1.3.0)
+mailbox/cmd/reboot                   ← inbound command; any payload → ESP.restart() (V1.3.0)
 ```
 
 ---
