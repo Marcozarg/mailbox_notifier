@@ -1,3 +1,12 @@
+// V2.1.1 — 2026-06-02 — Fix reboot button unique_id to match HA entity
+//
+// V2.1.1 changes:
+//   • BUG FIX — Discovery unique_id for the reboot button was "receiver_reboot"
+//     but HA assigned entity_id `button.mailbox_reboot_receiver` (slug of the
+//     name "Reboot receiver"). Code now uses "reboot_receiver" to match HA.
+//     Old retained config `homeassistant/button/receiver_reboot/config` cleared
+//     at boot by clearOldDiscovery(). No behaviour change — command_topic unchanged.
+//
 // V2.1.0 — 2026-06-02 — Reclassify LoRa link + seq metrics as sender entities
 //
 // V2.1.0 changes:
@@ -311,7 +320,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.1.0"
+#define FW_VERSION "V2.1.1"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -977,7 +986,8 @@ void clearOldDiscovery() {
     "homeassistant/sensor/receiver_snr/config",
     "homeassistant/sensor/receiver_last_seen/config",
     "homeassistant/sensor/receiver_freq_error/config",
-    "homeassistant/sensor/receiver_packet_loss/config"
+    "homeassistant/sensor/receiver_packet_loss/config",
+    "homeassistant/button/receiver_reboot/config"    // V2.1.1: renamed to reboot_receiver
   };
   for (const char* t : stale) {
     mqttClient.beginMessage(t, true, 1);   // retained, empty body = HA deletes the entity
@@ -1056,7 +1066,10 @@ void publishDiscoveryAll() {
 
   // ---- V1.3.0 additions ---------------------------------------------------
   // Reboot button — HA sends any payload to T_CMD_REBOOT; receiver calls ESP.restart().
-  publishOneDiscovery("button", "receiver_reboot", "Reboot receiver",
+  // unique_id "reboot_receiver" matches the entity_id HA assigned (mailbox_reboot_receiver).
+  // HA slugified the name "Reboot receiver" rather than the object_id, so the code
+  // now uses the slug that HA already knows to keep them in sync.
+  publishOneDiscovery("button", "reboot_receiver", "Reboot receiver",
                       nullptr, "restart", nullptr, nullptr, "config",
                       "\"command_topic\":\"mailbox/cmd/reboot\"");
 
