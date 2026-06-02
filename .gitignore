@@ -34,6 +34,9 @@ Circuit pictures/
 # Windows mount. User can clean up via Explorer when convenient.
 _pending_delete/
 
+# --- Claude Code workspace (local AI assistant state — not project files) ---
+.claude/
+
 # --- Editor / OS ---
 .DS_Store
 Thumbs.db

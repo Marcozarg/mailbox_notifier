@@ -23,7 +23,7 @@ Field-tested at -58 dBm RSSI / +11 dB SNR through one large tree at 50 m.
 - **Environmental sensors** — temperature, humidity, pressure inside the mailbox (BME280).
 - **Battery monitoring** — voltage + percentage, with a 6 h "low battery" heartbeat boost (vs the normal 48 h cadence) when it dips below 3.6 V.
 - **Three-layer dedup** — sender 60 s lockout + receiver guard + Node-RED Trigger node — prevents bouncy lid double-notifications.
-- **Auto-discovered** in HA via MQTT discovery: 18 entities under one "Mailbox" device card, no manual `configuration.yaml` editing. Entity naming follows a strict `sender_/receiver_` scheme so the origin of every value is obvious.
+- **Auto-discovered** in HA via MQTT discovery: 21 entities under one "Mailbox" device card, no manual `configuration.yaml` editing. Entity naming follows a strict `sender_/receiver_` scheme so the origin of every value is obvious.
 
 ## Repo layout
 
@@ -32,10 +32,15 @@ Field-tested at -58 dBm RSSI / +11 dB SNR through one large tree at 50 m.
 ├── firmware/                                      Arduino sketches (each in its own folder, IDE-ready)
 │   ├── mailbox_sender_V3/                         Sender firmware
 │   └── mailbox_receiver_V3/                       Receiver firmware
+├── Node-RED/                                      Node-RED flow exports (import via HA Node-RED UI)
+│   ├── Node-RED_mail_arrived.txt                  Mail notification + RSSI
+│   ├── Node-RED_battery_low.txt                   Low-battery Pushover alert
+│   └── Node-RED_sender_boot.txt                   Sender reboot Pushover alert
 ├── docs/
 │   ├── SENDER_HARDWARE.md                         Sender pinout + wiring reference
 │   ├── RECEIVER_V3_PLAN.md                        Receiver design plan + locked decisions
 │   └── WORKFLOW_AND_TESTING.md                    Phased build & test plan
+├── CHANGELOG.md                                   Full version history (sender + receiver)
 ├── FEATURES.md                                    Canonical feature list
 ├── LICENSE                                        MIT
 └── README.md                                      This file
@@ -48,7 +53,7 @@ Field-tested at -58 dBm RSSI / +11 dB SNR through one large tree at 50 m.
   - BME280 6-pin module (GY-BME280, I2C 0x76)
   - Normally Open reed switch + magnet
   - 2000 mAh 3.7 V LiPo
-  - 8.2 cm wire-stub antenna (quarter-wave for 868 MHz)
+  - External 868 MHz stubby antenna (+2 dBi) on u.FL pigtail, routed outside the enclosure
   - Optional: blue LED on D5 for prototyping
 - **Receiver** (in the house)
   - Heltec WiFi LoRa 32 V3 (ESP32-S3 + SX1262 + OLED)
@@ -84,13 +89,13 @@ Pin maps and wiring details: [`docs/SENDER_HARDWARE.md`](docs/SENDER_HARDWARE.md
 
 4. **Wire up the sender** per [`docs/SENDER_HARDWARE.md`](docs/SENDER_HARDWARE.md). The reed-switch mounting is non-obvious — make sure to read §1.5 of that doc.
 
-5. **Flash the receiver first**, watch its Serial Monitor for the `[disc] Publishing 18 entity configs` line. The "Mailbox" device should appear in HA → Settings → Devices & Services → MQTT.
+5. **Flash the receiver first**, watch its Serial Monitor for the `[disc] Publishing 21 entity configs` line. The "Mailbox" device should appear in HA → Settings → Devices & Services → MQTT.
 
 6. **Flash the sender**. Note the build-time toggles at the top of the `.ino`:
    - `DEBUG_NOSLEEP=1` for bench debugging (chip stays awake, prints sensor values once a second in Serial Plotter format).
    - All toggles set to `0` for field deployment.
 
-7. **Drop in the dashboard** from `home_assistant/HA_mailbox_dashboard.yaml` and the Pushover flow from `home_assistant/nodered_pushover_flow.json`.
+7. **Import the Node-RED flows** from the `Node-RED/` folder. In Node-RED: Menu → Import → paste the contents of each `.txt` file. Three flows: mail notification (`Node-RED_mail_arrived.txt`), low-battery alert (`Node-RED_battery_low.txt`), sender reboot alert (`Node-RED_sender_boot.txt`).
 
 8. **Subsequent updates can go over WiFi (OTA).** Once the receiver is running, Arduino IDE will list `mailbox at <IP>` as a network port (mDNS name `mailbox.local`; pre-V1.2.3 firmware listed itself as `arduinomailman`). Pick it, click Upload. The IDE will prompt for a password — **leave the field blank** and press OK; the receiver has no password set (per the locked design decision to trust the LAN). The OLED will show live `OTA xx%` during the upload.
 
