@@ -5,7 +5,7 @@
 End-to-end plan from "what's on the bench today" to "the mailbox pings my phone via Home Assistant when the postman opens the lid." Each phase has an entry condition, work items, and an acceptance test. Don't move on until the acceptance test passes.
 
 The phases assume the hardware shown in the project photos:
-- **Sender:** Adafruit Feather 32u4 LoRa (RFM95, SX1276, 868 MHz) + 2000 mAh LiPo + reed switch + DHT22.
+- **Sender:** Adafruit Feather 32u4 LoRa (RFM95, SX1276, 868 MHz) + 2000 mAh LiPo + reed switch + BME280 (DHT22 replaced in V1.0.0).
 - **Receiver:** Heltec WiFi LoRa 32 V3 (ESP32-S3 + **SX1262** + OLED) on USB power in the house.
 - **Backend:** Home Assistant on `192.168.xxx.xxx`, Mosquitto MQTT broker at `192.168.xxx.xxx`.
 
@@ -138,9 +138,8 @@ Work items:
 ## Phase 7 — Polish (optional, time-permitting)
 
 - Auto-disable the Feather's onboard charge LED when running on battery only — saves a few mA when the LiPo isn't being charged.
-- Power-gate the DHT22 via a GPIO so it only draws current during the ~250 ms read.
-- Replace DHT22 with **BME280** (in your parts cabinet) — I2C, lower power, more accurate, also gives barometric pressure.
-- Swap the wire antenna for a tuned 868 MHz whip with SMA connector; route it outside the metal mailbox.
+- ~~Replace DHT22 with BME280~~ — **DONE** (V1.0.0 sender). BME280 on I2C 0x76, gives temp/humidity/pressure.
+- ~~Swap the wire antenna for a tuned 868 MHz whip; route it outside the metal mailbox~~ — **DONE** (sender V1.0.7). External 868 MHz stubby (+2 dBi) on u.FL pigtail.
 - Add a small PV cell + diode to trickle-charge the LiPo (overkill at one event/day, but fun).
 - Encrypt the LoRa payload with AES-128 (RadioLib supports it) — overkill for a mailbox sensor but a clean exercise.
 
@@ -155,7 +154,7 @@ Work items:
 | T-WAKE | Reed wake | Magnet + Serial | One TX per magnet-remove, ≤ 500 ms latency |
 | T-SLEEP | Sleep current | Multimeter (µA) | Idle avg ≤ 1 mA, ideally < 500 µA |
 | T-HEART | Heartbeat | 1 week log | One packet every 48 h ± 5 h (or every 6 h ± 36 min when vbat < 3.6 V) |
-| T-DISC | MQTT discovery | HA "Devices" page | All 7 entities present, grouped, populated |
+| T-DISC | MQTT discovery | HA "Devices" page | All 21 entities present, grouped, populated |
 | T-CLEAR | State clear | HA dashboard button | `binary_sensor.mailbox_state = off` within 1 s |
 | T-RANGE | Range in place | Walk test, RSSI log | ≤ 1 % loss, ≥ 15 dB margin over sensitivity |
 | T-FIELD | 7-day field | Postman log | 0 missed events, 0 false events, voltage stable |

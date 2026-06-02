@@ -2,7 +2,7 @@
 
 # `mailbox_receiver_V3.ino` — Design plan
 
-Planning document for the Heltec WiFi LoRa 32 V3 receiver firmware. Target file: `O:\Claude\Mailbox notifier\mailbox_receiver_V3.ino` (project root). Existing baseline: `Old Receiver sketches/mailbox_receiver_V2_real.ino` (works, but minimal).
+Planning document for the Heltec WiFi LoRa 32 V3 receiver firmware. Target file: `firmware/mailbox_receiver_V3/mailbox_receiver_V3.ino`. Existing baseline: `Old Receiver sketches/mailbox_receiver_V2_real.ino` (works, but minimal).
 
 ---
 
@@ -148,8 +148,8 @@ Build the V3 receiver in three priority tiers. Tier 1 must work; tier 2 is "make
 - **Web status page** — tiny built-in HTTP server showing the OLED contents in a browser. Useful, but the OLED is right there.
 - **Buzzer output** — you have a 3V buzzer in the cabinet. Wire it to a free GPIO and beep on mail event. Optional in-house alert that doesn't need your phone.
 - **Encrypted LoRa packet** — RadioLib supports AES-128 with a shared key in flash. Spoofing a mailbox sensor is low-stakes but it's a clean exercise.
-- **HA service-call pass-through** — if the dashboard publishes `mailbox/cmd/reboot`, the receiver reboots itself. Handy for remote recovery.
-- **Frequency-error logging to HA** — long-term plot of sender crystal drift vs temperature is a fun side-project.
+- **HA service-call pass-through** — *(DONE V1.3.0)* subscribes to `mailbox/cmd/reboot`; any payload triggers `ESP.restart()`. HA button entity auto-discovered.
+- **Frequency-error logging to HA** — *(DONE V1.3.0)* `radio.getFrequencyError()` published to `mailbox/receiver/freq_error` after each RX.
 
 ---
 
@@ -178,6 +178,9 @@ Topic structure (V1.1.0+). All topics namespaced into `mailbox/sender/*` (data t
 | `mailbox/receiver/online` | RX LWT | retained | `binary_sensor.mailbox_receiver_online` | LWT-managed |
 | `mailbox/receiver/wifi_rssi` | RX → HA | not retained | `sensor.mailbox_receiver_wifi_rssi` | diagnostic |
 | `mailbox/receiver/uptime` | RX → HA | not retained | `sensor.mailbox_receiver_uptime` (d, duration) | 2 decimals (V1.0.8+) |
+| `mailbox/receiver/packet_loss` | RX → HA | retained | `sensor.mailbox_receiver_packet_loss` (total_increasing) | cumulative missed-seq count (V1.3.0) |
+| `mailbox/receiver/freq_error` | RX → HA | not retained | `sensor.mailbox_receiver_freq_error` (Hz, measurement) | sender crystal drift per packet (V1.3.0) |
+| `mailbox/cmd/reboot` | HA → RX | — | `button.mailbox_receiver_reboot` (device_class restart) | any payload → ESP.restart() (V1.3.0) |
 
 **Discovery:** all entities published once at receiver boot to `homeassistant/<platform>/<unique_id>/config` with the right `device_class`, `unit_of_measurement`, `state_class`, `entity_category`, and a shared `device` block grouping them under one HA device card called "Mailbox" (V1.1.0+; was "Mailbox sensor" pre-V1.1.0).
 
@@ -255,7 +258,7 @@ Total awake time: ~250 ms instead of DHT22's ~2 s. Big battery win.
 | 1 | Packet format | **Key=value** (Option B) |
 | 2 | MQTT discovery | **Yes** — receiver self-publishes `homeassistant/.../config` on boot |
 | 3 | Heartbeat interval | **48 h** (originally 24 h, changed 2026-05-07) |
-| 4 | Tier 3 features | **OTA only** — buzzer / AES / web / HA-reboot deferred |
+| 4 | Tier 3 features | **OTA + HA-reboot + freq-error done** — buzzer / AES / web still deferred |
 
 **Implication of 48 h heartbeat:** receiver's `sender_alive` timeout is **98 h** (= 48 h heartbeat × 2 + 2 h slack), so it tolerates one missed heartbeat before flagging the link as broken. HA alert "sender dead?" will fire ~4 days after a real outage. Acceptable for a once/day mail event use case where the user notices physically before HA does.
 

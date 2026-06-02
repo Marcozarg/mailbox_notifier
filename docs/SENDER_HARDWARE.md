@@ -170,11 +170,10 @@ Recommended order so the board is debuggable at each step:
 | 2000 mAh LiPo (103450) | 1 | already wired | already on hand, dated 2024-07 |
 | GY-BME280 6-pin module | 1 | drawer "GY-BME280 3.3" | confirm it has the on-board LDO |
 | NO reed switch + magnet | 1 | already wired | the white reed seen in your circuit photos |
-| 10 kΩ resistor | 1 | drawer "RE 1k-20k" | any 4.7–47 kΩ works |
 | Blue LED | 1 | drawer "LED Blue …" | already wired |
 | 330 Ω resistor (LED current limit) | 1 | drawer "R270 1K" or similar | only if not already inline with the LED |
 | Hookup wire / breadboard | — | already wired | |
-| Wire-stub antenna for 868 MHz | 1 | already wired | quarter-wave ≈ 8.2 cm |
+| External 868 MHz stubby antenna (+2 dBi) on u.FL pigtail | 1 | already wired | routed outside the metal enclosure (V1.0.7); quarter-wave wire stub was removed |
 
 ---
 
