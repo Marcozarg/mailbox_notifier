@@ -1,3 +1,20 @@
+// V2.1.0 — 2026-06-02 — Reclassify LoRa link + seq metrics as sender entities
+//
+// V2.1.0 changes:
+//   • Five entities previously prefixed receiver_ are renamed to sender_ because
+//     the values describe the sender's signal and behaviour, not the receiver itself:
+//       receiver_rssi        → sender_rssi        (LoRa RSSI of the sender's signal)
+//       receiver_snr         → sender_snr         (LoRa SNR of the sender's signal)
+//       receiver_last_seen   → sender_last_seen   (timestamp of last packet from sender)
+//       receiver_freq_error  → sender_freq_error  (sender crystal frequency drift)
+//       receiver_packet_loss → sender_packet_loss (gaps in sender's seq counter)
+//     MQTT topics renamed in lockstep: mailbox/receiver/rssi → mailbox/sender/rssi, etc.
+//     Old retained discovery configs cleared at boot so HA removes the ghost entities.
+//     HA entity_ids that change: sensor.mailbox_receiver_{rssi,snr,last_seen,
+//     freq_error,packet_loss} → sensor.mailbox_sender_* equivalents.
+//     Update any HA dashboard cards that reference the old entity_ids.
+//   • Receiver entities that stay as receiver_*: online, wifi_rssi, uptime, reboot.
+//
 // V2.0.0 — 2026-06-02 — Version milestone: project documentation overhaul
 //
 // V2.0.0 changes:
@@ -294,7 +311,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.0.0"
+#define FW_VERSION "V2.1.0"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -385,16 +402,17 @@ const char T_S_BOOT_REASON[]      = "mailbox/sender/boot_reason";
 const char T_S_SENSOR_OK[]        = "mailbox/sender/sensor_ok";     // side channel, no HA entity
 const char T_S_ALIVE[]            = "mailbox/sender/alive";         // retained, "true"/"false"
 const char T_S_VERSION[]          = "mailbox/sender/version";       // sender FW string
+// V2.1.0: reclassified from receiver_* — these describe the sender's signal/behaviour.
+const char T_S_RSSI[]         = "mailbox/sender/rssi";
+const char T_S_SNR[]          = "mailbox/sender/snr";
+const char T_S_LAST_SEEN[]    = "mailbox/sender/last_seen";
+const char T_S_PACKET_LOSS[]  = "mailbox/sender/packet_loss";       // gaps in sender seq counter
+const char T_S_FREQ_ERROR[]   = "mailbox/sender/freq_error";        // sender crystal drift, Hz
 
-// Receiver-measured (RX → HA).
-const char T_R_RSSI[]         = "mailbox/receiver/rssi";
-const char T_R_SNR[]          = "mailbox/receiver/snr";
-const char T_R_LAST_SEEN[]    = "mailbox/receiver/last_seen";
+// Receiver-measured (RX → HA) — genuinely about the Heltec V3 itself.
 const char T_R_ONLINE[]       = "mailbox/receiver/online";          // LWT-retained
 const char T_R_WIFI_RSSI[]    = "mailbox/receiver/wifi_rssi";
 const char T_R_UPTIME[]       = "mailbox/receiver/uptime";
-const char T_R_PACKET_LOSS[]  = "mailbox/receiver/packet_loss";     // V1.3.0: cumulative missed packets
-const char T_R_FREQ_ERROR[]   = "mailbox/receiver/freq_error";      // V1.3.0: sender crystal drift, Hz
 
 // HA → receiver commands (V1.3.0).
 const char T_CMD_REBOOT[]     = "mailbox/cmd/reboot";               // any payload → ESP.restart()
@@ -508,6 +526,7 @@ unsigned long btnPressStartMs    = 0;
 ////////////////////////////////////////////////////////////////////////////////
 void connectWifi();
 void connectMqtt();
+void clearOldDiscovery();
 void publishDiscoveryAll();
 void publishOnePacket();
 void publishDiagnostics();
@@ -950,12 +969,31 @@ void publishOneDiscovery(const char* platform, const char* uniqueId,
   mqttClient.endMessage();
 }
 
+// V2.1.0 migration: clear retained discovery configs for the 5 entities that
+// were renamed from receiver_* to sender_* so HA removes the ghost entities.
+void clearOldDiscovery() {
+  const char* stale[] = {
+    "homeassistant/sensor/receiver_rssi/config",
+    "homeassistant/sensor/receiver_snr/config",
+    "homeassistant/sensor/receiver_last_seen/config",
+    "homeassistant/sensor/receiver_freq_error/config",
+    "homeassistant/sensor/receiver_packet_loss/config"
+  };
+  for (const char* t : stale) {
+    mqttClient.beginMessage(t, true, 1);   // retained, empty body = HA deletes the entity
+    mqttClient.endMessage();
+  }
+  LOG("disc", "Cleared 5 stale receiver_* discovery configs (V2.1.0 migration)");
+}
+
 void publishDiscoveryAll() {
   // V1.2.0: 18 entities. Names + unique_ids no longer carry the "mailbox"
   // prefix — HA prepends the device name "Mailbox" automatically. This avoids
   // the doubled `sensor.mailbox_mailbox_*` entity_id that modern HA produced
   // for the V1.1.0/V1.1.1 discovery payloads.
-  LOG("disc", "Publishing 21 entity configs (V1.3.0: +reboot button, +packet_loss, +freq_error)");
+  // V2.1.0: rssi, snr, last_seen, freq_error, packet_loss moved to sender_*.
+  clearOldDiscovery();
+  LOG("disc", "Publishing 21 entity configs (V2.1.0: rssi/snr/last_seen/freq_error/packet_loss → sender_*)");
 
   // ---- Headline ------------------------------------------------------------
   // binary_sensor.mailbox_state — sticky, payload MAIL/EMPTY.
@@ -998,14 +1036,16 @@ void publishDiscoveryAll() {
                       T_S_VERSION, nullptr, nullptr, nullptr, "diagnostic",
                       "\"icon\":\"mdi:tag-text\"");
 
-  // ---- Receiver-measured (link quality + receiver self-diagnostics) -------
-  publishOneDiscovery("sensor", "receiver_rssi", "Receiver RSSI",
-                      T_R_RSSI, "signal_strength", "dBm", "measurement", "diagnostic");
-  publishOneDiscovery("sensor", "receiver_snr", "Receiver SNR",
-                      T_R_SNR, nullptr, "dB", "measurement", "diagnostic");
-  publishOneDiscovery("sensor", "receiver_last_seen", "Receiver last seen",
-                      T_R_LAST_SEEN, "timestamp", nullptr, nullptr, "diagnostic");
+  // ---- Sender-derived: LoRa link quality + seq bookkeeping (V2.1.0) --------
+  // These are measured by the receiver but describe the sender's signal/behaviour.
+  publishOneDiscovery("sensor", "sender_rssi", "Sender RSSI",
+                      T_S_RSSI, "signal_strength", "dBm", "measurement", "diagnostic");
+  publishOneDiscovery("sensor", "sender_snr", "Sender SNR",
+                      T_S_SNR, nullptr, "dB", "measurement", "diagnostic");
+  publishOneDiscovery("sensor", "sender_last_seen", "Sender last seen",
+                      T_S_LAST_SEEN, "timestamp", nullptr, nullptr, "diagnostic");
 
+  // ---- Receiver self-diagnostics (genuinely about the Heltec V3) ----------
   publishOneDiscovery("binary_sensor", "receiver_online", "Receiver online",
                       T_R_ONLINE, "connectivity", nullptr, nullptr, "diagnostic",
                       "\"payload_on\":\"true\",\"payload_off\":\"false\"");
@@ -1020,11 +1060,11 @@ void publishDiscoveryAll() {
                       nullptr, "restart", nullptr, nullptr, "config",
                       "\"command_topic\":\"mailbox/cmd/reboot\"");
 
-  publishOneDiscovery("sensor", "receiver_packet_loss", "Receiver packet loss",
-                      T_R_PACKET_LOSS, nullptr, nullptr, "total_increasing", "diagnostic");
+  publishOneDiscovery("sensor", "sender_packet_loss", "Sender packet loss",
+                      T_S_PACKET_LOSS, nullptr, nullptr, "total_increasing", "diagnostic");
 
-  publishOneDiscovery("sensor", "receiver_freq_error", "Receiver freq error",
-                      T_R_FREQ_ERROR, nullptr, "Hz", "measurement", "diagnostic");
+  publishOneDiscovery("sensor", "sender_freq_error", "Sender freq error",
+                      T_S_FREQ_ERROR, nullptr, "Hz", "measurement", "diagnostic");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1173,8 +1213,8 @@ void publishOnePacket() {
   publishOne(T_S_BATTERY_VOLTAGE,  String(lastPkt.vbatMv / 1000.0, 2),         true);
   publishOne(T_S_BATTERY_PERCENT,  batteryPercentString(lastPkt.vbatMv),       true);
   publishOne(T_S_PACKET_SEQ,       String(lastPkt.seq),                        true);
-  publishOne(T_R_RSSI,             String(lastPkt.rssi, 1),                    true);
-  publishOne(T_R_SNR,              String(lastPkt.snr,  1),                    true);
+  publishOne(T_S_RSSI,             String(lastPkt.rssi, 1),                    true);
+  publishOne(T_S_SNR,              String(lastPkt.snr,  1),                    true);
   publishOne(T_S_SENSOR_OK,        lastPkt.sensorOk ? "true" : "false");
   publishOne(T_S_BOOT_COUNT,       String(lastPkt.bootCount),                  true);
   if (lastPkt.bootReason.length()) publishOne(T_S_BOOT_REASON, lastPkt.bootReason, true);
@@ -1187,12 +1227,12 @@ void publishOnePacket() {
     struct tm* tmInfo = gmtime(&now);
     char isoBuf[32];
     strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tmInfo);
-    publishOne(T_R_LAST_SEEN, String(isoBuf), true);
+    publishOne(T_S_LAST_SEEN, String(isoBuf), true);
   }
 
   // V1.3.0: packet loss counter + frequency error.
-  publishOne(T_R_PACKET_LOSS, String(packetLossCount), true);
-  publishOne(T_R_FREQ_ERROR,  String(radio.getFrequencyError(), 1));
+  publishOne(T_S_PACKET_LOSS, String(packetLossCount), true);
+  publishOne(T_S_FREQ_ERROR,  String(radio.getFrequencyError(), 1));
 
   // V1.1.0 (Q3-b): the V2_real `mailboxstatus/feather` JSON-blob publish has
   // been removed. All values are now first-class HA entities on their own
