@@ -1,0 +1,47 @@
+# --- Secrets — never commit credentials ---
+# Real arduino_secrets.h files contain WiFi password + MQTT broker creds.
+# Anyone cloning this repo copies arduino_secrets.h.example → arduino_secrets.h
+# and fills in their own values.
+**/arduino_secrets.h
+
+# --- Arduino IDE / build artifacts ---
+build/
+*.hex
+*.elf
+*.bin
+*.eep
+*.lst
+*.lss
+*.sym
+*.map
+
+# --- Personal / copyrighted material kept locally but not in repo ---
+# Manufacturer datasheets are copyrighted and not redistributable.
+Datasheets/
+# Transient build-error logs from IDE compile failures.
+compile errors/
+# Reference-only style example for a different project.
+esphome project example/
+# Personal photos of parts cabinet — not project-specific.
+My available components/
+# Empty directories left over after the GitHub restructure
+# (Linux rmdir was blocked by the mount; harmless on disk).
+Home Assistant configuration/
+Old Receiver sketches/
+Circuit pictures/
+
+# Files moved here when the sandbox couldn't delete them through the
+# Windows mount. User can clean up via Explorer when convenient.
+_pending_delete/
+
+# --- Claude Code workspace (local AI assistant state — not project files) ---
+.claude/
+
+# --- Editor / OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+*.swp
+*.swo
+*~

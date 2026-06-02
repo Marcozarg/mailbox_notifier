@@ -179,8 +179,8 @@ Recommended order so the board is debuggable at each step:
 
 ## 5. Cross-reference
 
-- **Receiver firmware design:** `RECEIVER_V3_PLAN.md` (the receiver must parse the new key=value packet format with BME280 fields).
-- **Workflow & testing phases:** `WORKFLOW_AND_TESTING.md` (Phase 2 covers the BME280 + reed bench tests).
-- **Locked design decisions:** captured in agent memory (`project_decisions.md`).
+- **Packet format & MQTT topics:** see `README.md` §Packet format and §MQTT topic tree.
+- **System behaviour & HA integration:** see `README.md` §Home Assistant integration.
+- **Version history:** see `CHANGELOG.md`.
 
 
