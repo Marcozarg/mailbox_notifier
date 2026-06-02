@@ -1,0 +1,231 @@
+# Changelog
+
+All firmware changes for the mailbox notifier system — sender (Adafruit Feather 32u4
+LoRa) and receiver (Heltec WiFi LoRa 32 V3). Ascending order, oldest first.
+
+---
+
+## Sender
+
+### V1.0.0
+Initial release. Battery-powered reed-switch sensor: deep-sleeps in AVR PWR_DOWN,
+wakes on lid-open ISR, reads BME280, transmits key=value LoRa packet at +20 dBm,
+60 s reed lockout, 48 h heartbeat, boot packet with reset reason.
+
+### V1.0.1
+- New build toggle `DEBUG_NOSLEEP` (default 1 for bench). Keeps chip awake forever;
+  prints sensor readings in Arduino Serial Plotter format (label:value) once per second.
+- `DEBUG_NOSLEEP` mode uses 5 s reed lockout (vs 60 s) for faster bench iteration.
+- Added `while (!Serial && millis() < 3000)` at boot so USB-CDC enumerates before the
+  first Serial log line.
+
+### V1.0.2
+- New sub-toggle `DEBUG_HEARTBEAT_30S` (default 0). When `DEBUG_NOSLEEP` is on, the
+  loop no longer auto-fires a heartbeat every 30 s unless this is set to 1.
+- All visible version strings (boot banner) now derive from a single `FW_VERSION` macro.
+
+### V1.0.3 *(reverted in V1.0.4)*
+- New packet type `0x05` = "lid closed". Triggered on reed-open falling edge.
+  Reverted per user feedback — lid-close status was not useful.
+
+### V1.0.4
+- Reverted V1.0.3: removed packet type 5, `needLidCloseTx` state flag, lid-close
+  polling, and DEBUG_NOSLEEP falling-edge detection. Sender goes back to V1.0.2
+  single-edge (TX only on lid-open) behaviour.
+- `DEBUG_NOSLEEP` reed debounce restored to 5 s.
+
+### V1.0.5
+- Switched to production toggles: `DEBUG_NOSLEEP=0`, `DEBUG_LED=0`, `ENABLE_SERIAL=0`.
+- New `BOOT_UPLOAD_WINDOW_MS` (10 000 ms). After `setup()` finishes, the chip stays
+  awake for 10 s so the Arduino IDE can trigger a normal upload via 1200-baud-touch
+  auto-reset without the Caterina double-tap dance. Only applies in field mode
+  (`DEBUG_NOSLEEP=0`).
+
+### V1.0.6
+- Cosmetic: sketch and parent folder renamed from `adafruit_Lora_32u4_Mailbox_Sender_V3`
+  to `mailbox_sender_V3`. No behaviour change.
+
+### V1.0.7
+- Documentation only: antenna upgraded from 8.2 cm wire stub (~0 dBi) to external
+  868 MHz stubby (~+2 dBi) on a u.FL pigtail routed outside the metal enclosure.
+  Yields ~10–15 dB better RSSI/SNR. TX power left at +20 dBm. No code change.
+
+### V1.0.8
+- Normal heartbeat cadence doubled: 24 h → 48 h (`HB_TICKS_NORMAL` 10800 → 21600).
+  Halves long-term heartbeat TX count, marginally extends battery life.
+  Low-battery heartbeat unchanged at 6 h.
+
+### V1.0.9
+- WDT tick stretched from 8 s → 32 s via new `sleep32s()` helper that calls
+  `LowPower.powerDown(SLEEP_8S, …)` four times. MCU wakes 4× less often (~2700/day
+  vs ~10800/day). Reed events still bail out of the inner loop immediately, so
+  reed-trigger latency is unchanged (≤ 8 s worst case).
+  Tick-count constants rescaled: `HB_TICKS_NORMAL` 21600→5400, `HB_TICKS_LOW_BATT`
+  2700→675, `LOCKOUT_TICKS` 8→2 (all durations preserved).
+- Added `&fw=` field to every LoRa packet so the receiver can publish the running
+  sender version to HA.
+
+### V1.1.0 — 2026-05-22
+- `&br=` (boot reason) now included in **every** packet, not just type=4 boot packets.
+  Prevents HA from showing "Unknown" for boot reason when the sender reboots while HA
+  is offline; the current value arrives on the next packet regardless of timing.
+- `bootReasonStr()` labels made more human-readable:
+  `PORF`→"power-on", `EXTRF`→"external reset", `WDRF`→"watchdog",
+  `BORF`→"brown-out", none→"normal" (was "unknown" — Caterina often clears MCUSR).
+
+---
+
+## Receiver
+
+### V1.0.0
+Initial V3 rewrite (Heltec WiFi LoRa 32 V3, RadioLib via `heltec_unofficial.h`).
+Key improvements over V2_real:
+- Real MQTT reconnect logic (no more `while(1)` halts)
+- 30 s hardware watchdog
+- MQTT discovery — HA auto-creates "Mailbox" device + entities
+- Last-Will-and-Testament
+- Sticky `mailbox/state` retained; cleared by HA dashboard or PRG long-press
+- Sender-alive heartbeat detector (98 h timeout)
+- ArduinoOTA (no password — trust the LAN)
+- OLED auto-off after 10 min, woken by PRG short-press
+- NTP-stamped `last_seen` (fi.pool.ntp.org, Europe/Helsinki)
+
+### V1.0.1
+- Backward-compatibility publishes to V2_real MQTT topics so existing HA dashboard
+  entities (`mailboxstatus/switch`, `mailboxstatus/feather`) keep updating while the
+  new `mailbox/*` entities are being validated. Removed in V1.1.0.
+
+### V1.0.2
+- **BUG FIX** — MQTT TX payload buffer increased from default 256 → 1024 bytes
+  (`mqttClient.setTxPayloadSize(1024)`). Each discovery JSON is ~300–400 bytes, so
+  the default buffer silently dropped every discovery message. Symptom: "Mailbox"
+  device never appeared in HA.
+- All visible version strings now derive from a single `FW_VERSION` macro.
+
+### V1.0.3
+- **BUG FIX** — MQTT discovery for `mailbox_msg_count` and `mailbox_boot_count` was
+  rejected by HA because they declared `state_class` without `unit_of_measurement`
+  (HA requires both or neither). Stripped `state_class` from those two entities.
+- Active NTP sync wait (up to 10 s) at end of `setup()` so `last_seen` timestamps are
+  correct on the very first received packet.
+
+### V1.0.4
+- Reverted receiver side of V1.0.3 lid-close feature: removed `mailbox_lid` entity
+  from MQTT discovery and stopped publishing to `T_LID`. The `r=` field is still
+  parsed for diagnostic logging but not exposed to HA.
+
+### V1.0.5
+- **BUG FIX** — PRG short-press logged "wake OLED" but the screen stayed dark. Root
+  cause: `heltec_display_power(false)` cuts Vext, requiring full SSD1306 re-init on
+  power-on. Switched to `display.displayOff()` / `display.displayOn()` (soft SSD1306
+  commands that toggle the panel without dropping its config).
+
+### V1.0.6
+- **BUG FIX A** — `mailState` was set to true *before* the MQTT publish. If the broker
+  was down, the flag flipped silently without reaching Mosquitto. On subsequent events
+  the receiver thought state was already MAIL and never re-published. Fix: only mutate
+  `mailState` after a successful publish.
+- **BUG FIX B** — `onMqttMessage` subscribed to `T_STATE` but never acted on incoming
+  messages. The "restore sticky state from broker" path never worked. Now `T_STATE =
+  MAIL/EMPTY` updates `mailState` locally, keeping receiver in sync with broker and HA
+  dashboard clears.
+
+### V1.0.7
+- Sender-alive timeout doubled: 50 h → 98 h, in lockstep with sender V1.0.8 heartbeat
+  change (24 h → 48 h). Scaling preserved at heartbeat × 2 + 2 h slack; still
+  tolerates exactly one missed heartbeat.
+
+### V1.0.8
+- `mailbox_receiver_uptime` switched from seconds to days (2 decimal places). HA card
+  now shows "1.34 d" instead of "115320 s".
+- Receiver firmware version moved from boot splash to the main OLED screen
+  (right-justified, top status row) so it is always visible.
+- New entity `mailbox_sender_version` — shows the sender's running firmware string in
+  HA (from `&fw=` field added by sender V1.0.9). Discovery entity count: 15 → 16.
+
+### V1.1.0 *(breaking — MQTT topics and entity_ids restructured)*
+- MQTT topics reorganised: sender-derived values under `mailbox/sender/...`, receiver-
+  measured values under `mailbox/receiver/...`, `mailbox/state` as the headline.
+  Old topics (`mailbox/temp`, `mailbox/rssi`, `mailbox/sender_fw`, etc.) removed with
+  no aliasing.
+- Entity_ids reorganised into `sender_` / `receiver_` scheme (e.g.
+  `mailbox_temp` → `mailbox_sender_temperature`, `mailbox_rssi` → `mailbox_receiver_rssi`).
+- Legacy V2_real compatibility publishes removed (`mailboxstatus/switch`,
+  `mailboxstatus/feather` JSON blob). HA dashboard clear now publishes `EMPTY`
+  (retained) directly to `mailbox/state`.
+- Device card name: "Mailbox sensor" → "Mailbox".
+
+### V1.1.1
+- **BUG FIX** — ArduinoOTA upload was dying at ~50 % with WinError 10054. Root cause:
+  `ArduinoOTA.handle()` blocks `loop()` during binary streaming and 4 KB flash erases,
+  tripping the 30 s task watchdog. Fix: `onStart`/`onProgress`/`onEnd`/`onError`
+  callbacks call `esp_task_wdt_reset()`.
+- `clearDio1Action()` called on OTA start to prevent RadioLib DIO1 ISR from firing
+  during flash erase (SPI race). Re-arms LoRa receive on `onError` so a failed upload
+  does not leave the receiver LoRa-deaf until reboot.
+- OLED now shows live `OTA xx%` progress during upload.
+
+### V1.2.0 — 2026-05-22 *(breaking — entity naming cleanup)*
+- **BUG FIX** — All 18 entities had doubled "mailbox_" in their `entity_id`
+  (e.g. `sensor.mailbox_mailbox_sender_battery`). Root cause: modern HA prepends the
+  device slug to `object_id`, and `object_id` already contained "mailbox_". Fix: drop
+  the "Mailbox" prefix from every entity `name` and the "mailbox_" prefix from every
+  `unique_id` / `object_id`.
+- **Migration:** V1.1.0/V1.1.1 entities go "Unavailable" after this flash. Delete them
+  via Settings → Devices & services → MQTT → filter "unavailable" + search "mailbox_mailbox".
+
+### V1.2.1
+- `mailbox/sender/last_packet_type` now publishes a human-readable label
+  ("mail" / "heartbeat" / "heartbeat (low batt)" / "boot") instead of the raw
+  integer 1/2/3/4. Implemented via `packetTypeLabel()` helper. No wire-format change.
+
+### V1.2.2
+- WiFi DHCP hostname changed from `arduinomailman` to `mailbox.<SECRET_DOMAINNAME>`
+  (e.g. `mailbox.homenet.io`). New secret documented in `arduino_secrets.h.example`.
+
+### V1.2.3
+- ArduinoOTA hostname aligned with the WiFi hostname. Both now use the same `WIFI_HOSTNAME`
+  macro (`mailbox`). Arduino IDE network port list now reads `mailbox at <IP>`.
+
+### V1.2.4 — 2026-05-25
+- **BUG FIX** — After any Mosquitto restart, the receiver lost its `mailbox/state`
+  subscription and never got it back. Root cause: `cleanSession=true` causes the broker
+  to discard subscriptions on disconnect; `connectMqtt()` was only publishing the LWT
+  online flag, never re-subscribing. Without the subscription: (1) HA dashboard clears
+  were silently ignored, and (2) the next real reed event was dropped as "already MAIL".
+  Fix: move `mqttClient.subscribe(T_STATE)` into `connectMqtt()` so it fires on every
+  connect, not just at boot.
+
+### V1.2.5 — 2026-06-02
+- **BUG FIX** — Mail arriving while the receiver's MQTT was in exponential backoff
+  (HA had finished rebooting but the receiver had not yet reconnected) was permanently
+  lost. The retained sensor values already in Mosquitto made it look like data "came
+  through fine", masking the miss. Fix: `pendingMailState` bool; set when a type=1
+  reed event arrives with MQTT down. In `connectMqtt()`, publish MAIL *before*
+  subscribing to `T_STATE` so the broker's retained value is updated first; the
+  subscribe-triggered retained delivery then converges `mailState` correctly.
+
+### V1.2.6 — 2026-06-02
+- **BUG FIX** — State never published when the sender's `r=` field was 0 in a type=1
+  (mail) packet. Root cause: the sender reads `digitalRead(PIN_REED)` at packet-build
+  time — up to 8 s after the ISR fires, plus ~10 ms BME280 read. If the lid closed
+  before `buildPacket()` ran, `r=0` even for a genuine mail event. The receiver gated
+  on `lastPkt.reedOpen`, so with `r=0` the state publish was silently skipped. Fix:
+  removed the `lastPkt.reedOpen` gate entirely. `pktType == 1` is the authoritative
+  mail-arrived signal; `r=` is diagnostic only.
+
+### V1.3.0 — 2026-06-02
+- **NEW** — HA reboot command: receiver subscribes to `mailbox/cmd/reboot`; any
+  incoming message triggers `ESP.restart()`. A `button` entity (device_class restart)
+  is published via MQTT discovery and appears as a one-tap button on the Mailbox device
+  card in HA.
+- **NEW** — Packet loss counter: gaps in the sender's `seq` number (uint8 wrapping
+  arithmetic) are accumulated in `packetLossCount` and published to
+  `mailbox/receiver/packet_loss` (retained, `total_increasing`) after every packet.
+  Type=4 boot packets excluded (sender legitimately resets seq to 0 on boot).
+- **NEW** — Frequency error sensor: `radio.getFrequencyError()` published to
+  `mailbox/receiver/freq_error` (Hz, `measurement`) after each RX, allowing HA to plot
+  sender crystal drift vs. temperature over time.
+- **INTERNAL** — `publishOneDiscovery()` now treats `stateTopic` as optional: if null
+  or empty the `state_topic` JSON field is omitted. Required for the `button` platform,
+  which uses `command_topic` instead. Entity count: 18 → 21.
