@@ -1,3 +1,10 @@
+// V2.0.0 — 2026-06-02 — Version milestone: project documentation overhaul
+//
+// V2.0.0 changes:
+//   • Version milestone bump to align with V2.0.0 receiver. No firmware changes.
+//     Documentation restructured: README.md is now the canonical project reference,
+//     HARDWARE.md (was docs/SENDER_HARDWARE.md) moved to repo root.
+//
 // V1.1.0 — 2026-05-22 — Mailbox sender V3 (Adafruit Feather 32u4 LoRa, BME280, NO reed)
 //
 // V1.1.0 changes:
@@ -118,7 +125,7 @@
 // Single source of truth for the firmware version string. Used by the boot
 // SLOG banner. Update this when bumping the version stamp at the top of the
 // file so the runtime log matches the header without manual sync.
-#define FW_VERSION "V1.1.0"
+#define FW_VERSION "V2.0.0"
 //
 // Battery-powered mailbox sensor:
 //   • Sleeps in AVR PWR_DOWN (~10 µA + LiPo charger leakage) almost continuously.

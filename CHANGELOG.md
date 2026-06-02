@@ -65,6 +65,11 @@ wakes on lid-open ISR, reads BME280, transmits key=value LoRa packet at +20 dBm,
 - Added `&fw=` field to every LoRa packet so the receiver can publish the running
   sender version to HA.
 
+### V2.0.0 — 2026-06-02
+- Version milestone bump to align with V2.0.0 receiver. No firmware changes.
+  Documentation restructured: README.md is the canonical reference, HARDWARE.md moved
+  to repo root, planning docs removed.
+
 ### V1.1.0 — 2026-05-22
 - `&br=` (boot reason) now included in **every** packet, not just type=4 boot packets.
   Prevents HA from showing "Unknown" for boot reason when the sender reboots while HA
@@ -229,3 +234,8 @@ Key improvements over V2_real:
 - **INTERNAL** — `publishOneDiscovery()` now treats `stateTopic` as optional: if null
   or empty the `state_topic` JSON field is omitted. Required for the `button` platform,
   which uses `command_topic` instead. Entity count: 18 → 21.
+
+### V2.0.0 — 2026-06-02
+- Version milestone bump to align with V2.0.0 sender. No firmware changes.
+  Documentation restructured: README.md is the canonical reference, HARDWARE.md moved
+  to repo root, planning docs removed.

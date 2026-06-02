@@ -1,3 +1,10 @@
+// V2.0.0 — 2026-06-02 — Version milestone: project documentation overhaul
+//
+// V2.0.0 changes:
+//   • Version milestone bump to align with V2.0.0 sender. No firmware changes.
+//     Documentation restructured: README.md is now the canonical project reference,
+//     HARDWARE.md (was docs/SENDER_HARDWARE.md) moved to repo root, planning docs removed.
+//
 // V1.3.0 — 2026-06-02 — Features: HA reboot command, packet loss counter, freq error sensor
 //
 // V1.3.0 changes:
@@ -287,7 +294,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V1.3.0"
+#define FW_VERSION "V2.0.0"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
