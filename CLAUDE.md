@@ -26,7 +26,7 @@ Feather 32u4 ── LoRa 866 MHz SF9 BW250 ──► Heltec V3 ── WiFi/MQTT 
 | Component | Version | File |
 |---|---|---|
 | Sender | V1.1.0 | `firmware/mailbox_sender_V3/mailbox_sender_V3.ino` |
-| Receiver | V1.2.4 | `firmware/mailbox_receiver_V3/mailbox_receiver_V3.ino` |
+| Receiver | V1.2.5 | `firmware/mailbox_receiver_V3/mailbox_receiver_V3.ino` |
 
 ---
 
@@ -226,3 +226,4 @@ Never invent a new top-level `mailbox/<thing>` topic outside the scheme.
 | V1.0.6 | `onMqttMessage` subscribed to T_STATE but ignored it — retained state never restored on boot. Fixed. |
 | V1.1.1 | OTA killed by 30 s WDT mid-upload (`WinError 10054`) — now kicked from `onProgress` callback. |
 | V1.2.4 | `connectMqtt()` never re-subscribed to T_STATE — after Mosquitto restart, dashboard clears were silently lost and reed events were dropped as "already MAIL". Fixed by adding `subscribe(T_STATE)` inside `connectMqtt()`. |
+| V1.2.5 | Reed event arriving while receiver was in MQTT exponential-backoff (HA rebooted, receiver not yet reconnected) was permanently lost. `pendingMailState` flag added; connectMqtt() publishes MAIL before subscribing if flag is set. |

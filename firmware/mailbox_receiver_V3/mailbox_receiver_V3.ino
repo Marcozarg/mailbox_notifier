@@ -1,3 +1,20 @@
+// V1.2.5 — 2026-06-02 — BUG FIX: publish deferred reed event on MQTT reconnect
+//
+// V1.2.5 changes:
+//   • BUG FIX — Mail arriving while the receiver's MQTT was in exponential-backoff
+//     (i.e. HA had finished rebooting but the receiver hadn't reconnected yet) was
+//     silently lost. Root cause: when a type=1 reed packet arrived with MQTT down,
+//     parseAndDispatch() correctly skipped publishOnePacket() and logged "MAIL
+//     pending — MQTT disconnected", but it did NOT set any flag. When MQTT later
+//     reconnected, nothing triggered the deferred publish — the mail event was gone
+//     forever. The retained sensor values already in Mosquitto (from the previous
+//     delivery) made it look like data "came through fine", masking the miss.
+//     Fix: add a `pendingMailState` bool. When a type=1 reed event is received
+//     while MQTT is down, set the flag. In connectMqtt(), publish MAIL *before*
+//     subscribing to T_STATE — this updates the broker's retained value first, so
+//     the subscribe-triggered retained-message delivery in onMqttMessage picks up
+//     MAIL and mailState converges correctly on the first poll().
+//
 // V1.2.4 — 2026-05-25 — BUG FIX: re-subscribe to T_STATE on every MQTT reconnect
 //
 // V1.2.4 changes:
@@ -231,7 +248,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V1.2.4"
+#define FW_VERSION "V1.2.5"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -380,6 +397,9 @@ bool          senderAliveLast  = true;        // last value published, only repu
 // Sticky mail state — recovered from broker at boot (subscribe to T_STATE retained).
 bool          mailState        = false;       // false = EMPTY, true = MAIL
 unsigned long lastMailTransitionMs = 0;       // for STATE_REPEAT_GUARD_MS
+// V1.2.5: set when a type=1 reed event arrives while MQTT is disconnected.
+// Cleared (and MAIL published) inside connectMqtt() on the next successful connect.
+bool          pendingMailState = false;
 
 // Last decoded packet — kept so the OLED + diagnostic publishes can display them
 // even between RX events.
@@ -786,6 +806,23 @@ void connectMqtt() {
   mqttClient.print("true");
   mqttClient.endMessage();
 
+  // V1.2.5 BUG FIX: if a reed event was received while MQTT was down, publish
+  // MAIL *before* subscribing to T_STATE. Publishing first updates the broker's
+  // retained value to MAIL; the subscribe below then causes the broker to
+  // replay MAIL back to us via onMqttMessage(), so mailState converges to true
+  // on the first poll(). If we subscribed first and published second, the broker
+  // would replay the old retained EMPTY before our MAIL arrived, then replay
+  // MAIL — harmless but noisy; publishing first avoids that double-flip.
+  if (pendingMailState) {
+    mqttClient.beginMessage(T_STATE, true, 1);   // retained, QoS 1
+    mqttClient.print("MAIL");
+    mqttClient.endMessage();
+    mailState            = true;
+    lastMailTransitionMs = millis();
+    pendingMailState     = false;
+    LOG("state", "MAIL → published (deferred from MQTT-disconnected period)");
+  }
+
   // V1.2.4 BUG FIX: re-subscribe to T_STATE on every (re)connect.
   // MQTT cleanSession=true causes the broker to discard all subscriptions for
   // this client ID on disconnect. Without re-subscribing here the receiver
@@ -992,9 +1029,9 @@ void parseAndDispatch(const String& payload, float rssi, float snr) {
         lastMailTransitionMs = millis();             // moved (V1.0.6 fix A)
         LOG("state", "MAIL → published (reed event)");
       } else {
-        // V1.0.6 fix A: log the disconnected-publish path so we can see this
-        // exact case in the Serial monitor if it recurs.
-        LOG("state", "MAIL pending — MQTT disconnected, will retry on next reed event");
+        // V1.2.5: queue for publish on next MQTT reconnect (see connectMqtt()).
+        pendingMailState = true;
+        LOG("state", "MAIL queued — MQTT disconnected, will publish on reconnect");
       }
     } else {
       LOG("state", "reed event ignored (already MAIL or guarded)");
