@@ -235,6 +235,23 @@ Key improvements over V2_real:
   or empty the `state_topic` JSON field is omitted. Required for the `button` platform,
   which uses `command_topic` instead. Entity count: 18 → 21.
 
+### V2.1.0 — 2026-06-02
+- Five entities reclassified from `receiver_*` to `sender_*` because the values
+  describe the sender's signal and behaviour, not the receiver hardware itself:
+  - `receiver_rssi` → `sender_rssi` (LoRa RSSI of the sender's signal)
+  - `receiver_snr` → `sender_snr` (LoRa SNR of the sender's signal)
+  - `receiver_last_seen` → `sender_last_seen` (timestamp of last packet from sender)
+  - `receiver_freq_error` → `sender_freq_error` (sender crystal frequency drift)
+  - `receiver_packet_loss` → `sender_packet_loss` (gaps in sender's seq counter)
+- MQTT topics renamed in lockstep: `mailbox/receiver/{rssi,snr,last_seen,freq_error,packet_loss}`
+  → `mailbox/sender/*`.
+- Old retained discovery configs cleared at boot so HA automatically removes the ghost
+  entities without manual intervention.
+- **Migration:** HA entity_ids `sensor.mailbox_receiver_{rssi,snr,last_seen,freq_error,packet_loss}`
+  become `sensor.mailbox_sender_*` after OTA flash. Update any dashboard cards that
+  reference the old entity_ids.
+- Receiver entities that stay as `receiver_*`: `online`, `wifi_rssi`, `uptime`, `reboot`.
+
 ### V2.0.0 — 2026-06-02
 - Version milestone bump to align with V2.0.0 sender. No firmware changes.
   Documentation restructured: README.md is the canonical reference, HARDWARE.md moved

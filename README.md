@@ -122,14 +122,14 @@ Forward-compatible by design — receiver ignores unknown keys.
 | `mailbox/sender/sensor_ok` | RX → HA | no | side channel, no HA entity |
 | `mailbox/sender/alive` | RX → HA | yes | true/false, timeout-driven (98 h) |
 | `mailbox/sender/version` | RX → HA | yes | sender FW string |
-| `mailbox/receiver/rssi` | RX → HA | yes | dBm of last RX packet |
-| `mailbox/receiver/snr` | RX → HA | yes | dB of last RX packet |
-| `mailbox/receiver/last_seen` | RX → HA | yes | ISO 8601 NTP timestamp |
+| `mailbox/sender/rssi` | RX → HA | yes | dBm of last RX packet (V2.1.0+) |
+| `mailbox/sender/snr` | RX → HA | yes | dB of last RX packet (V2.1.0+) |
+| `mailbox/sender/last_seen` | RX → HA | yes | ISO 8601 NTP timestamp (V2.1.0+) |
+| `mailbox/sender/packet_loss` | RX → HA | yes | cumulative missed-seq count (V2.1.0+) |
+| `mailbox/sender/freq_error` | RX → HA | no | Hz, sender crystal drift (V2.1.0+) |
 | `mailbox/receiver/online` | RX LWT | yes | true/false, LWT-managed |
 | `mailbox/receiver/wifi_rssi` | RX → HA | no | dBm |
 | `mailbox/receiver/uptime` | RX → HA | no | days, 2 decimals |
-| `mailbox/receiver/packet_loss` | RX → HA | yes | cumulative missed-seq count (V1.3.0+) |
-| `mailbox/receiver/freq_error` | RX → HA | no | Hz, sender crystal drift (V1.3.0+) |
 | `mailbox/cmd/reboot` | HA → RX | — | any payload → ESP.restart() (V1.3.0+) |
 
 ---
@@ -156,14 +156,14 @@ editing needed.
 | `sensor.mailbox_sender_boot_reason` | sensor | — | diagnostic |
 | `binary_sensor.mailbox_sender_alive` | binary | connectivity | diagnostic |
 | `sensor.mailbox_sender_version` | sensor | — | diagnostic |
-| `sensor.mailbox_receiver_rssi` | sensor | signal_strength | dBm, diagnostic |
-| `sensor.mailbox_receiver_snr` | sensor | — | dB, diagnostic |
-| `sensor.mailbox_receiver_last_seen` | sensor | timestamp | retained |
+| `sensor.mailbox_sender_rssi` | sensor | signal_strength | dBm, diagnostic |
+| `sensor.mailbox_sender_snr` | sensor | — | dB, diagnostic |
+| `sensor.mailbox_sender_last_seen` | sensor | timestamp | retained |
+| `sensor.mailbox_sender_packet_loss` | sensor | — | total_increasing, diagnostic |
+| `sensor.mailbox_sender_freq_error` | sensor | — | Hz, diagnostic |
 | `binary_sensor.mailbox_receiver_online` | binary | connectivity | LWT, diagnostic |
 | `sensor.mailbox_receiver_wifi_rssi` | sensor | signal_strength | dBm, diagnostic |
 | `sensor.mailbox_receiver_uptime` | sensor | duration | days, diagnostic |
-| `sensor.mailbox_receiver_packet_loss` | sensor | — | total_increasing, diagnostic |
-| `sensor.mailbox_receiver_freq_error` | sensor | — | Hz, diagnostic |
 | `button.mailbox_receiver_reboot` | button | restart | triggers ESP.restart() |
 
 ### Entity naming rule (V1.2.0+) — important for firmware changes
@@ -440,7 +440,7 @@ WiFi MQTT  10:42           V1.3.0   ← top row: connection status + clock + FW 
                                     
 21.4°C  67%  1013 hPa               ← latest sender values
 Bat: 3.92V (78%)                    
-RSSI -84  SNR 9.5  #42              ← receiver link quality + seq
+RSSI -84  SNR 9.5  #42              ← sender link quality + seq
 ```
 
 Auto-off after 10 min idle. Woken by PRG short-press.
