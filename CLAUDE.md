@@ -26,7 +26,7 @@ Feather 32u4 ── LoRa 866 MHz SF9 BW250 ──► Heltec V3 ── WiFi/MQTT 
 | Component | Version | File |
 |---|---|---|
 | Sender | V1.1.0 | `firmware/mailbox_sender_V3/mailbox_sender_V3.ino` |
-| Receiver | V1.2.5 | `firmware/mailbox_receiver_V3/mailbox_receiver_V3.ino` |
+| Receiver | V1.2.6 | `firmware/mailbox_receiver_V3/mailbox_receiver_V3.ino` |
 
 ---
 
@@ -227,3 +227,4 @@ Never invent a new top-level `mailbox/<thing>` topic outside the scheme.
 | V1.1.1 | OTA killed by 30 s WDT mid-upload (`WinError 10054`) — now kicked from `onProgress` callback. |
 | V1.2.4 | `connectMqtt()` never re-subscribed to T_STATE — after Mosquitto restart, dashboard clears were silently lost and reed events were dropped as "already MAIL". Fixed by adding `subscribe(T_STATE)` inside `connectMqtt()`. |
 | V1.2.5 | Reed event arriving while receiver was in MQTT exponential-backoff (HA rebooted, receiver not yet reconnected) was permanently lost. `pendingMailState` flag added; connectMqtt() publishes MAIL before subscribing if flag is set. |
+| V1.2.6 | State never published when sender's `r=0` in a type=1 packet. Root cause: sender reads the reed pin at packet-build time (up to 8 s after ISR + BME280 read); lid may already be closed. Removed `lastPkt.reedOpen` gate from the type=1 state check — pktType==1 is the authoritative mail-arrived signal. |

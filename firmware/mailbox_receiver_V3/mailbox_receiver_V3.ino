@@ -1,3 +1,20 @@
+// V1.2.6 — 2026-06-02 — BUG FIX: do not gate state on r= field for type=1 packets
+//
+// V1.2.6 changes:
+//   • BUG FIX — State never published when the sender's r= field was 0 in a
+//     type=1 (reed/mail) packet. Root cause: the sender reads digitalRead(PIN_REED)
+//     when building the packet. The sender sleeps up to 8 s before waking on the
+//     reed ISR, then spends ~10 ms reading the BME280. If the lid was opened briefly
+//     (quick user test, fast mailman, or bad timing vs the 8 s sleep cycle), the lid
+//     may already be closed again before buildPacket() runs — so r=0 even though the
+//     reed event was real. The receiver checked `lastPkt.reedOpen` as a gate:
+//       `if (pktType == 1 && lastPkt.reedOpen)`
+//     With r=0 that condition was always false, so state was silently never published.
+//     Fix: remove the `lastPkt.reedOpen` gate. pktType == 1 IS the mail-arrived
+//     signal — the sender's reed ISR already confirmed the event. Whether the reed
+//     happens to still be open at packet-build time is irrelevant. The r= field is
+//     kept in the packet for diagnostics but must not gate the state transition.
+//
 // V1.2.5 — 2026-06-02 — BUG FIX: publish deferred reed event on MQTT reconnect
 //
 // V1.2.5 changes:
@@ -248,7 +265,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V1.2.5"
+#define FW_VERSION "V1.2.6"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -1018,7 +1035,12 @@ void parseAndDispatch(const String& payload, float rssi, float snr) {
   // V1.0.6 fix A: mutate mailState ONLY after a successful publish. Previously
   // the flag was set unconditionally, so a reed event during HA reboot would
   // leave the receiver thinking it had published when it hadn't.
-  if (pktType == 1 && lastPkt.reedOpen) {
+  //
+  // V1.2.6: do NOT gate on lastPkt.reedOpen. The sender reads digitalRead(PIN_REED)
+  // at packet-build time, which can be 0 even for a real lid-open event if the lid
+  // closed before the sender finished sleeping + reading the BME280 (up to ~8 s).
+  // pktType == 1 is already the authoritative mail-arrived signal from the ISR.
+  if (pktType == 1) {
     if (!mailState && (millis() - lastMailTransitionMs > STATE_REPEAT_GUARD_MS)) {
       if (mqttClient.connected()) {
         mqttClient.beginMessage(T_STATE, true, 1);   // retained, QoS 1
