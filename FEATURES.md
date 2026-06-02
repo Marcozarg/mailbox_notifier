@@ -15,7 +15,7 @@ This is the canonical "what the system does" reference. When in doubt about an e
 - **Reed switch:** Normally Open (NO) type, paired with magnet. **Inverted mounting:** reed CLOSED only when lid is OPEN.
 - **Environment sensor:** BME280 (6-pin GY-BME280 module), I2C address `0x76` (SDO→GND, CSB→3V3 = I2C mode).
 - **Debug LED:** Blue LED on D5 (pin labelled "5" on silkscreen). Wire stays installed in the field, firmware-gated.
-- **Antenna:** Wire-stub quarter-wave for 868 MHz (~8.2 cm).
+- **Antenna:** External 868 MHz stubby (+2 dBi) on u.FL pigtail, routed outside the metal enclosure (V1.0.7; replaced 8.2 cm wire stub).
 
 ### 1.2 Sender pin map (canonical: `SENDER_HARDWARE.md`)
 
@@ -83,7 +83,7 @@ This is the canonical "what the system does" reference. When in doubt about an e
 Key=value ASCII over LoRa. ~60–70 bytes typical. ~190 ms airtime at SF9/250 kHz.
 
 ```
-id=AA&type=1&seq=42&t=21.43&h=67&p=1013.2&v=3920&r=1&sok=1&boot=12&up=1234&br=cold&fw=V1.0.9
+id=AA&type=1&seq=42&t=21.43&h=67&p=1013.2&v=3920&r=1&sok=1&boot=12&up=1234&br=normal&fw=V1.1.0
 ```
 
 | Key | Meaning |
@@ -111,7 +111,8 @@ Forward-compat by design: receiver ignores unknown keys. Sender can add new ones
 ### 5.1 Connectivity
 
 - WiFi auto-reconnect.
-- MQTT auto-reconnect with exponential backoff (5 s → 5 min cap), no `while(1)` halts. On every successful reconnect the receiver re-subscribes to `mailbox/state` (V1.2.4+; pre-V1.2.4 the subscription was lost after any Mosquitto restart, causing HA dashboard clears to be silently ignored and subsequent reed events to be dropped as "already MAIL").
+- MQTT auto-reconnect with exponential backoff (5 s → 5 min cap), no `while(1)` halts. On every successful reconnect the receiver re-subscribes to `mailbox/state` (V1.2.4+; pre-V1.2.4 the subscription was lost after any Mosquitto restart, causing HA dashboard clears to be silently ignored and subsequent reed events to be dropped as "already MAIL"). Also re-subscribes to `mailbox/cmd/reboot` (V1.3.0+).
+- **Deferred mail publish (V1.2.5+):** if a type=1 reed packet arrives while MQTT is in backoff (e.g. HA just finished rebooting), a `pendingMailState` flag is set. In `connectMqtt()`, MAIL is published *before* subscribing to `mailbox/state` so the broker's retained value is updated first; the subscribe-triggered retained delivery then syncs `mailState` correctly.
 - Last-Will-and-Testament: retained `mailbox/receiver/online = false` if disconnected ungracefully.
 - ArduinoOTA (no password — trust the LAN). Host part `mailbox` (V1.2.3+; pre-V1.2.3 was `arduinomailman`). Advertised on mDNS as `mailbox.local`; Arduino IDE shows it as `mailbox at <IP>` in the network ports list. WiFi DHCP hostname is the FQDN `mailbox.<SECRET_DOMAINNAME>` (e.g. `mailbox.homenet.io`) so the device shows up tidy in router lease tables too. Arduino IDE prompts for a password on every network upload — **leave the field blank and press OK**, the receiver ignores whatever is typed. V1.1.1+ keeps the 30 s task-watchdog kicked from the OTA progress callback so multi-second flash erases don't trip it (manifested as `WinError 10054` mid-upload pre-V1.1.1), and the OLED shows live `OTA xx%`.
 - NTP: `fi.pool.ntp.org` + `pool.ntp.org`, Europe/Helsinki TZ with DST. Active wait up to 10 s in setup.
@@ -119,7 +120,7 @@ Forward-compat by design: receiver ignores unknown keys. Sender can add new ones
 
 ### 5.2 Sticky `mailbox/state`
 
-- **Sticky design.** Reed event published to `mailbox/state = "MAIL"` (retained, QoS 1) only on the EMPTY → MAIL transition. Subsequent reed events while state is already MAIL are ignored at the receiver.
+- **Sticky design.** Reed event (type=1) published to `mailbox/state = "MAIL"` (retained, QoS 1) only on the EMPTY → MAIL transition. `pktType == 1` is the authoritative mail-arrived signal — the `r=` (reed-state-at-TX) field is diagnostic only and does **not** gate the state publish (V1.2.6+; pre-V1.2.6 the `r=0` gate silently dropped real mail events where the lid had closed before `buildPacket()` ran).
 - **Cleared by:** HA dashboard button (publishes `EMPTY` retained to `mailbox/state`; receiver subscribes and adopts via the V1.0.6 Fix B path), OR Heltec PRG long-press (≥ 1500 ms). The legacy `mailboxstatus/switch` route was removed in V1.1.0. The subscription to `mailbox/state` is now restored on every MQTT reconnect (V1.2.4+) so dashboard clears are never silently lost after a Mosquitto restart.
 - **60 s repeat-MAIL guard** on top of the sender's 60 s lockout — defence in depth.
 - **Dup-seq guard:** receiver rejects packets with same seq as the last one (except type=4 boot packets, which legitimately reset seq to 0).
@@ -144,7 +145,7 @@ Forward-compat by design: receiver ignores unknown keys. Sender can add new ones
 
 ### 6.1 MQTT discovery
 
-Receiver publishes 18 retained discovery configs to `homeassistant/.../config` on every boot. HA dedups by `unique_id`. All entities grouped under one device card "Mailbox" (V1.1.0+; was "Mailbox sensor" pre-V1.1.0).
+Receiver publishes 21 retained discovery configs to `homeassistant/.../config` on every boot. HA dedups by `unique_id`. All entities grouped under one device card "Mailbox" (V1.1.0+; was "Mailbox sensor" pre-V1.1.0).
 
 Naming scheme (V1.2.0+): every entity_id follows the pattern **`<platform>.mailbox_<side>_<thing>`** where `<side>` is `sender` (data the Feather produces) or `receiver` (data the receiver measures). The discovery payload itself sends only the **un-prefixed `<side>_<thing>`** part — HA composes the `mailbox_` prefix automatically from the device slug (V1.1.0/V1.1.1 sent the doubled "mailbox_mailbox_*" because the prefix was redundantly included in both fields). The headline `mailbox_state` represents the device as a whole.
 
@@ -168,6 +169,9 @@ Naming scheme (V1.2.0+): every entity_id follows the pattern **`<platform>.mailb
 | `binary_sensor.mailbox_receiver_online` | binary | connectivity | LWT-driven, diagnostic |
 | `sensor.mailbox_receiver_wifi_rssi` | sensor | signal_strength | dBm, diagnostic |
 | `sensor.mailbox_receiver_uptime` | sensor | duration | d (days, 2 decimals), diagnostic |
+| `sensor.mailbox_receiver_packet_loss` | sensor | — | cumulative missed-seq count, retained, total_increasing, diagnostic (V1.3.0+) |
+| `sensor.mailbox_receiver_freq_error` | sensor | — | Hz, sender crystal drift per packet, measurement, diagnostic (V1.3.0+) |
+| `button.mailbox_receiver_reboot` | button | restart | triggers ESP.restart() via `mailbox/cmd/reboot` (V1.3.0+) |
 
 Removed in V1.0.4: `binary_sensor.mailbox_lid` (close-edge TX rolled back per user feedback).
 Renamed in V1.1.0: every `sensor.mailbox_*` entity except the headline `mailbox_state` (sender_/receiver_ scheme introduced).
@@ -179,7 +183,8 @@ V1.1.0 restructure — all topics now namespaced. Pre-V1.1.0 flat topics (`mailb
 
 - **Headline:** `mailbox/state` — `"MAIL"` / `"EMPTY"`, retained, bidirectional. Receiver publishes on reed events + PRG long-press. HA dashboard may publish `"EMPTY"` (retained) directly to clear.
 - **Sender-derived (RX → HA):** `mailbox/sender/temperature`, `mailbox/sender/humidity`, `mailbox/sender/pressure`, `mailbox/sender/battery_voltage`, `mailbox/sender/battery_percent`, `mailbox/sender/packet_seq`, `mailbox/sender/last_packet_type`, `mailbox/sender/boot_count`, `mailbox/sender/boot_reason`, `mailbox/sender/sensor_ok` (side channel, no HA entity), `mailbox/sender/alive`, `mailbox/sender/version`.
-- **Receiver-measured (RX → HA):** `mailbox/receiver/rssi`, `mailbox/receiver/snr`, `mailbox/receiver/last_seen`, `mailbox/receiver/online`, `mailbox/receiver/wifi_rssi`, `mailbox/receiver/uptime`.
+- **Receiver-measured (RX → HA):** `mailbox/receiver/rssi`, `mailbox/receiver/snr`, `mailbox/receiver/last_seen`, `mailbox/receiver/online`, `mailbox/receiver/wifi_rssi`, `mailbox/receiver/uptime`, `mailbox/receiver/packet_loss` (retained, V1.3.0+), `mailbox/receiver/freq_error` (V1.3.0+).
+- **Inbound command:** `mailbox/cmd/reboot` — any payload triggers `ESP.restart()` (V1.3.0+).
 
 ### 6.3 Lovelace dashboard
 
@@ -187,12 +192,13 @@ V1.1.0 restructure — all topics now namespaced. Pre-V1.1.0 flat topics (`mailb
 
 ### 6.4 Notification flow (Node-RED → Pushover → iPhone)
 
-- Subscribes to `mailbox/state`, fires on EMPTY→MAIL transition.
-- Pushover sound: `magic` (chime, not siren).
-- Priority 0 for mail; priority 1 + `falling` for sender/receiver-offline and low-battery alerts.
-- Body subscribes to `mailbox/sender/temperature` and `mailbox/sender/battery_percent` (V1.1.0+ topic paths) for live values: e.g. `"Postia laatikossa! 7.2 °C, akku 78%"`. **Pre-V1.1.0 flows** subscribing to `mailbox/temp` and `mailbox/battery_percent` need updating.
-- Trigger node 60 s block as third dedup layer.
-- No auto-clear — manual via dashboard or PRG long-press.
+Three Node-RED flows in `Node-RED/` (import via HA Node-RED UI → Menu → Import):
+
+- **`Node-RED_mail_arrived.txt`** — subscribes to `mailbox/state`; fires Pushover on EMPTY→MAIL transition. Body includes live RSSI from `mailbox/receiver/rssi` flow context: `"Postia laatikossa! (-95 dBm)"`. Pushover sound: `siren`, priority 0. Trigger node 60 s block as third dedup layer.
+- **`Node-RED_battery_low.txt`** — subscribes to `mailbox/sender/last_packet_type`; fires Pushover when value equals `"heartbeat (low batt)"` (the human label, **not** raw `"3"`). Priority 1, sound `falling`.
+- **`Node-RED_sender_boot.txt`** — subscribes to `mailbox/sender/boot_count`; fires Pushover when value changes (rbe node blocks the retained-value replay on Node-RED restart). Message includes boot reason from `mailbox/sender/boot_reason` flow context. Priority 0, sound `siren`.
+
+All flows use the same MQTT broker node (`HomeassistantMQTT`, localhost:1883) and Pushover node (device `iphone`, title `Mailbox`). No auto-clear — manual via HA dashboard or PRG long-press.
 
 ---
 
@@ -247,7 +253,7 @@ From `RECEIVER_V3_PLAN.md` §7 / §8 and `project_decisions.md` in agent memory:
 - Packet format: key=value ASCII (chosen over CSV / binary struct).
 - HA integration: MQTT discovery (chosen over hand-written sensor YAML).
 - Heartbeat: 48 h normal / 6 h when low-batt (was 24 h normal until 2026-05-07).
-- Tier 3 features in V3: OTA only. Buzzer / AES / web page / HA-reboot deferred.
+- Tier 3 features: OTA (done V1.1.1), HA-reboot command (done V1.3.0), freq-error sensor (done V1.3.0), packet-loss counter (done V1.3.0). Still deferred: buzzer, AES-128, web status page.
 - BME280: 6-pin module, CSB→3V, SDO→GND → address 0x76.
 - Mail-state auto-clear: none — manual only via HA button or PRG long-press.
 - Build order: receiver first, then sender.
@@ -258,9 +264,13 @@ From `RECEIVER_V3_PLAN.md` §7 / §8 and `project_decisions.md` in agent memory:
 
 | File | Purpose |
 |---|---|
-| `mailbox_receiver_V3.ino` | Receiver firmware (Heltec V3) |
-| `mailbox_sender_V3.ino` | Sender firmware (Feather 32u4 LoRa) |
-| `SENDER_HARDWARE.md` | Canonical sender pinout + wiring reference |
-| `RECEIVER_V3_PLAN.md` | Design plan — packet format, MQTT topics, OLED layout, decisions log |
-| `WORKFLOW_AND_TESTING.md` | Phased build/test plan |
+| `firmware/mailbox_receiver_V3/mailbox_receiver_V3.ino` | Receiver firmware (Heltec V3) |
+| `firmware/mailbox_sender_V3/mailbox_sender_V3.ino` | Sender firmware (Feather 32u4 LoRa) |
+| `Node-RED/Node-RED_mail_arrived.txt` | Mail notification Node-RED flow |
+| `Node-RED/Node-RED_battery_low.txt` | Low-battery alert Node-RED flow |
+| `Node-RED/Node-RED_sender_boot.txt` | Sender reboot alert Node-RED flow |
+| `docs/SENDER_HARDWARE.md` | Canonical sender pinout + wiring reference |
+| `docs/RECEIVER_V3_PLAN.md` | Design plan — packet format, MQTT topics, OLED layout, decisions log |
+| `docs/WORKFLOW_AND_TESTING.md` | Phased build/test plan |
+| `CHANGELOG.md` | Full version history (sender + receiver) |
 
