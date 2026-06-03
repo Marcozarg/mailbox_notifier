@@ -252,6 +252,15 @@ Key improvements over V2_real:
   reference the old entity_ids.
 - Receiver entities that stay as `receiver_*`: `online`, `wifi_rssi`, `uptime`, `reboot`.
 
+### V2.1.1 — 2026-06-02
+- **BUG FIX** — Reboot button `unique_id` in MQTT discovery was `"receiver_reboot"` but
+  HA assigned `button.mailbox_reboot_receiver` (slug of the name "Reboot receiver").
+  Changed unique_id to `"reboot_receiver"` to match. Old retained config topic
+  `homeassistant/button/receiver_reboot/config` added to `clearOldDiscovery()`.
+
+### V2.1.2 — 2026-06-03
+- Skill test
+
 ### V2.0.0 — 2026-06-02
 - Version milestone bump to align with V2.0.0 sender. No firmware changes.
   Documentation restructured: README.md is the canonical reference, HARDWARE.md moved

@@ -1,3 +1,8 @@
+// V2.1.2 — 2026-06-03 — Skill test
+//
+// V2.1.2 changes:
+//   • Skill test
+//
 // V2.1.1 — 2026-06-02 — Fix reboot button unique_id to match HA entity
 //
 // V2.1.1 changes:
@@ -320,7 +325,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.1.1"
+#define FW_VERSION "V2.1.2"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
