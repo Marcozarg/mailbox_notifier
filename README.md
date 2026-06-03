@@ -194,10 +194,13 @@ picks it up and syncs `mailState` locally.
 Three flow exports in `Node-RED/`. Import via HA Node-RED: **Menu → Import → paste
 contents of each `.txt` file**.
 
+Each file is versioned from V2.0.0. Version history is embedded as a comment node
+inside each flow and visible in the Node-RED editor.
+
 | File | Trigger | Message | Priority |
 |---|---|---|---|
-| `Node-RED_mail_arrived.txt` | `mailbox/state` → MAIL | "Postia laatikossa! (-95 dBm)" with live RSSI | 0, sound `siren` |
-| `Node-RED_battery_low.txt` | `mailbox/sender/last_packet_type` = `"heartbeat (low batt)"` | Low battery alert | 1, sound `falling` |
+| `Node-RED_mail_arrived.txt` | `mailbox/state` → MAIL | "Postia laatikossa! (-95 dBm)" — live RSSI from `mailbox/sender/rssi` | 0, sound `siren` |
+| `Node-RED_battery_low.txt` | `mailbox/sender/last_packet_type` = `"heartbeat (low batt)"` | "Mailbox battery low" | 0, sound `siren` |
 | `Node-RED_sender_boot.txt` | `mailbox/sender/boot_count` changes (rbe node blocks retained replay) | "Sender rebooted (reason: …, boot #N)" | 0, sound `siren` |
 
 All flows use broker `HomeassistantMQTT` (localhost:1883), Pushover device `iphone`,

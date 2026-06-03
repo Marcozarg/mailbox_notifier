@@ -256,3 +256,16 @@ Key improvements over V2_real:
 - Version milestone bump to align with V2.0.0 sender. No firmware changes.
   Documentation restructured: README.md is the canonical reference, HARDWARE.md moved
   to repo root, planning docs removed.
+
+---
+
+## Node-RED flows
+
+### V2.0.0 — 2026-06-03
+Initial versioned release. Version history is embedded as a comment node inside each
+file and visible in the Node-RED editor.
+
+- `Node-RED_mail_arrived.txt`: fixed RSSI subscription from `mailbox/receiver/rssi`
+  → `mailbox/sender/rssi` (firmware V2.1.0 reclassified RSSI as a sender metric).
+- `Node-RED_battery_low.txt`: no functional changes.
+- `Node-RED_sender_boot.txt`: no functional changes.
