@@ -130,13 +130,15 @@ Forward-compatible by design — receiver ignores unknown keys.
 | `mailbox/receiver/online` | RX LWT | yes | true/false, LWT-managed |
 | `mailbox/receiver/wifi_rssi` | RX → HA | no | dBm |
 | `mailbox/receiver/uptime` | RX → HA | no | days, 2 decimals |
+| `mailbox/receiver/crc_errors` | RX → HA | yes | cumulative CRC decode failures (V2.2.0+) |
+| `mailbox/last_mail_at` | RX → HA | yes | ISO 8601 timestamp of last MAIL event (V2.2.0+) |
 | `mailbox/cmd/reboot` | HA → RX | — | any payload → ESP.restart() (V1.3.0+) |
 
 ---
 
 ## Home Assistant integration
 
-### MQTT discovery — 21 entities
+### MQTT discovery — 23 entities
 
 Receiver publishes 21 retained `homeassistant/.../config` payloads at every boot. HA
 auto-creates all entities under one **"Mailbox"** device card — no `configuration.yaml`
@@ -164,6 +166,8 @@ editing needed.
 | `binary_sensor.mailbox_receiver_online` | binary | connectivity | LWT, diagnostic |
 | `sensor.mailbox_receiver_wifi_rssi` | sensor | signal_strength | dBm, diagnostic |
 | `sensor.mailbox_receiver_uptime` | sensor | duration | days, diagnostic |
+| `sensor.mailbox_receiver_crc_errors` | sensor | — | total_increasing, diagnostic (V2.2.0+) |
+| `sensor.mailbox_last_mail_at` | sensor | timestamp | "X days ago", auto-rendered by HA (V2.2.0+) |
 | `button.mailbox_receiver_reboot` | button | restart | triggers ESP.restart() |
 
 ### Entity naming rule (V1.2.0+) — important for firmware changes
@@ -191,7 +195,7 @@ picks it up and syncs `mailState` locally.
 
 ## Node-RED flows
 
-Three flow exports in `Node-RED/`. Import via HA Node-RED: **Menu → Import → paste
+Four flow exports in `Node-RED/`. Import via HA Node-RED: **Menu → Import → paste
 contents of each `.txt` file**.
 
 Each file is versioned from V2.0.0. Version history is embedded as a comment node
@@ -202,6 +206,7 @@ inside each flow and visible in the Node-RED editor.
 | `Node-RED_mail_arrived.txt` | `mailbox/state` → MAIL | "Postia laatikossa! (-95 dBm)" — live RSSI from `mailbox/sender/rssi` | 0, sound `siren` |
 | `Node-RED_battery_low.txt` | `mailbox/sender/last_packet_type` = `"heartbeat (low batt)"` | "Mailbox battery low" | 0, sound `siren` |
 | `Node-RED_sender_boot.txt` | `mailbox/sender/boot_count` changes (rbe node blocks retained replay) | "Sender rebooted (reason: …, boot #N)" | 0, sound `siren` |
+| `Node-RED_no_mail_alert.txt` | Daily 09:00 cron — if `mailbox/last_mail_at` > 7 days ago | "Ei postia N päivään" | 1, sound `falling` (V2.2.0+ receiver required) |
 
 All flows use broker `HomeassistantMQTT` (localhost:1883), Pushover device `iphone`,
 title `Mailbox`.
@@ -545,7 +550,8 @@ can't drift between header and runtime.
 ├── Node-RED/                       Flow exports (import into HA Node-RED)
 │   ├── Node-RED_mail_arrived.txt
 │   ├── Node-RED_battery_low.txt
-│   └── Node-RED_sender_boot.txt
+│   ├── Node-RED_sender_boot.txt
+│   └── Node-RED_no_mail_alert.txt
 ├── HARDWARE.md                     Sender pinout, wiring, reed mounting diagrams
 ├── CHANGELOG.md                    Full version history
 ├── README.md                       This file

@@ -1,3 +1,19 @@
+// V2.2.0 — 2026-06-03 — New: last_mail_at timestamp sensor + CRC error counter
+//
+// V2.2.0 changes:
+//   • NEW — Last-mail-at sensor: when state transitions to MAIL (reed event),
+//     the receiver records the NTP timestamp and publishes it retained to
+//     `mailbox/last_mail_at`. HA entity `sensor.mailbox_last_mail_at` has
+//     device_class timestamp so HA auto-renders "X hours ago" / "X days ago".
+//     Also published when a deferred MAIL event is flushed on MQTT reconnect.
+//   • NEW — CRC decode error counter: when RadioLib returns
+//     RADIOLIB_ERR_CRC_MISMATCH on an incoming packet, `crcErrorCount` is
+//     incremented and published retained to `mailbox/receiver/crc_errors`.
+//     HA entity `sensor.mailbox_receiver_crc_errors` (total_increasing,
+//     diagnostic). Distinguishes interference (CRC failures) from sender
+//     out-of-range (seq gaps tracked by `sender_packet_loss`).
+//   • Entity count: 21 → 23.
+//
 // V2.1.2 — 2026-06-03 — Skill test
 //
 // V2.1.2 changes:
@@ -325,7 +341,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.1.2"
+#define FW_VERSION "V2.2.0"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -427,6 +443,10 @@ const char T_S_FREQ_ERROR[]   = "mailbox/sender/freq_error";        // sender cr
 const char T_R_ONLINE[]       = "mailbox/receiver/online";          // LWT-retained
 const char T_R_WIFI_RSSI[]    = "mailbox/receiver/wifi_rssi";
 const char T_R_UPTIME[]       = "mailbox/receiver/uptime";
+const char T_R_CRC_ERRORS[]   = "mailbox/receiver/crc_errors";      // retained, total_increasing
+
+// System-level (not sender_ or receiver_ prefixed — describes the mailbox event).
+const char T_LAST_MAIL_AT[]   = "mailbox/last_mail_at";             // retained, ISO8601 of last MAIL
 
 // HA → receiver commands (V1.3.0).
 const char T_CMD_REBOOT[]     = "mailbox/cmd/reboot";               // any payload → ESP.restart()
@@ -489,6 +509,16 @@ bool          pendingMailState = false;
 // from the gap check since the sender legitimately resets seq to 0 on every boot).
 uint32_t      packetLossCount  = 0;
 
+// V2.2.0: NTP timestamp of the last MAIL state transition (reed event).
+// Published retained to T_LAST_MAIL_AT so HA can show "X days ago".
+// Stays 0 until the first type=1 packet after boot; the broker's retained
+// value survives receiver reboots so HA never loses the last known time.
+time_t        lastMailAt       = 0;
+
+// V2.2.0: cumulative CRC decode failures from RadioLib. Resets on reboot.
+// Distinguishes interference (CRC errors) from range issues (packet_loss seq gaps).
+uint32_t      crcErrorCount    = 0;
+
 // Last decoded packet — kept so the OLED + diagnostic publishes can display them
 // even between RX events.
 struct {
@@ -542,6 +572,7 @@ void connectWifi();
 void connectMqtt();
 void clearOldDiscovery();
 void publishDiscoveryAll();
+void publishOne(const char* topic, const String& value, bool retained = false);
 void publishOnePacket();
 void publishDiagnostics();
 void parseAndDispatch(const String& payload, float rssi, float snr);
@@ -812,6 +843,13 @@ void loop() {
       parseAndDispatch(payload, rssi, snr);
     } else {
       LOG("lora", "RX error %d", _radiolib_status);
+      if (_radiolib_status == RADIOLIB_ERR_CRC_MISMATCH) {
+        crcErrorCount++;
+        LOG("lora", "CRC mismatch (cumulative=%lu)", crcErrorCount);
+        if (mqttClient.connected()) {
+          publishOne(T_R_CRC_ERRORS, String(crcErrorCount), true);
+        }
+      }
     }
     // Re-arm the receiver. SX126X RX_TIMEOUT_INF is "stay in RX forever."
     RADIOLIB_OR_HALT(radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF));
@@ -918,6 +956,15 @@ void connectMqtt() {
     lastMailTransitionMs = millis();
     pendingMailState     = false;
     LOG("state", "MAIL → published (deferred from MQTT-disconnected period)");
+    // V2.2.0: publish the timestamp recorded when the reed event fired offline.
+    if (lastMailAt > 0) {
+      struct tm* tmInfo = gmtime(&lastMailAt);
+      char isoBuf[32];
+      strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tmInfo);
+      mqttClient.beginMessage(T_LAST_MAIL_AT, true, 1);
+      mqttClient.print(isoBuf);
+      mqttClient.endMessage();
+    }
   }
 
   // V1.2.4 BUG FIX: re-subscribe to T_STATE on every (re)connect.
@@ -1007,8 +1054,9 @@ void publishDiscoveryAll() {
   // the doubled `sensor.mailbox_mailbox_*` entity_id that modern HA produced
   // for the V1.1.0/V1.1.1 discovery payloads.
   // V2.1.0: rssi, snr, last_seen, freq_error, packet_loss moved to sender_*.
+  // V2.2.0: added last_mail_at + receiver_crc_errors. 21 → 23 entities.
   clearOldDiscovery();
-  LOG("disc", "Publishing 21 entity configs (V2.1.0: rssi/snr/last_seen/freq_error/packet_loss → sender_*)");
+  LOG("disc", "Publishing 23 entity configs");
 
   // ---- Headline ------------------------------------------------------------
   // binary_sensor.mailbox_state — sticky, payload MAIL/EMPTY.
@@ -1083,6 +1131,16 @@ void publishDiscoveryAll() {
 
   publishOneDiscovery("sensor", "sender_freq_error", "Sender freq error",
                       T_S_FREQ_ERROR, nullptr, "Hz", "measurement", "diagnostic");
+
+  // ---- V2.2.0 additions ---------------------------------------------------
+  // Last mail timestamp — system-level (not sender_ or receiver_ prefixed).
+  // device_class timestamp makes HA render "X hours ago" / "X days ago".
+  publishOneDiscovery("sensor", "last_mail_at", "Last mail",
+                      T_LAST_MAIL_AT, "timestamp", nullptr, nullptr, nullptr);
+
+  // CRC decode error counter — receiver hardware, so receiver_ prefix.
+  publishOneDiscovery("sensor", "receiver_crc_errors", "Receiver CRC errors",
+                      T_R_CRC_ERRORS, nullptr, nullptr, "total_increasing", "diagnostic");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1176,6 +1234,11 @@ void parseAndDispatch(const String& payload, float rssi, float snr) {
   // closed before the sender finished sleeping + reading the BME280 (up to ~8 s).
   // pktType == 1 is already the authoritative mail-arrived signal from the ISR.
   if (pktType == 1) {
+    // V2.2.0: record when this event fired; published to T_LAST_MAIL_AT on success
+    // or flushed in connectMqtt() if MQTT was down.
+    time_t nowTs = time(nullptr);
+    if (nowTs > 1700000000) lastMailAt = nowTs;
+
     if (!mailState && (millis() - lastMailTransitionMs > STATE_REPEAT_GUARD_MS)) {
       if (mqttClient.connected()) {
         mqttClient.beginMessage(T_STATE, true, 1);   // retained, QoS 1
@@ -1185,6 +1248,13 @@ void parseAndDispatch(const String& payload, float rssi, float snr) {
         mailState = true;                            // moved (V1.0.6 fix A)
         lastMailTransitionMs = millis();             // moved (V1.0.6 fix A)
         LOG("state", "MAIL → published (reed event)");
+        // V2.2.0: publish last_mail_at in lockstep with MAIL.
+        if (lastMailAt > 0) {
+          struct tm* tmInfo = gmtime(&lastMailAt);
+          char isoBuf[32];
+          strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%SZ", tmInfo);
+          publishOne(T_LAST_MAIL_AT, String(isoBuf), true);
+        }
       } else {
         // V1.2.5: queue for publish on next MQTT reconnect (see connectMqtt()).
         pendingMailState = true;

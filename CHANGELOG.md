@@ -258,6 +258,19 @@ Key improvements over V2_real:
   Changed unique_id to `"reboot_receiver"` to match. Old retained config topic
   `homeassistant/button/receiver_reboot/config` added to `clearOldDiscovery()`.
 
+### V2.2.0 — 2026-06-03
+- **NEW** — Last-mail-at sensor: receiver records the NTP timestamp when state
+  transitions to MAIL and publishes it retained to `mailbox/last_mail_at`.
+  HA entity `sensor.mailbox_last_mail_at` (device_class timestamp) auto-renders
+  "X hours ago" / "X days ago". Also published when a deferred MAIL event is
+  flushed on MQTT reconnect.
+- **NEW** — CRC decode error counter: RadioLib `RADIOLIB_ERR_CRC_MISMATCH`
+  responses increment `crcErrorCount`, published retained to
+  `mailbox/receiver/crc_errors` (total_increasing, diagnostic).
+  Lets you distinguish interference (CRC failures) from sender out-of-range
+  (seq gaps in `sender_packet_loss`).
+- Entity count: 21 → 23.
+
 ### V2.1.2 — 2026-06-03
 - Skill test
 
@@ -269,6 +282,12 @@ Key improvements over V2_real:
 ---
 
 ## Node-RED flows
+
+### V2.1.0 — 2026-06-03
+- **NEW** — `Node-RED_no_mail_alert.txt`: fires Pushover "Ei postia N päivään"
+  (priority 1, sound falling) if `mailbox/last_mail_at` is older than 7 days.
+  Checks daily at 09:00 server time via cron inject node. Requires receiver
+  firmware V2.2.0+ for the `mailbox/last_mail_at` retained topic.
 
 ### V2.0.0 — 2026-06-03
 Initial versioned release. Version history is embedded as a comment node inside each
