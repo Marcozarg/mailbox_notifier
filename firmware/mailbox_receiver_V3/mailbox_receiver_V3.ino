@@ -1270,7 +1270,7 @@ void parseAndDispatch(const String& payload, float rssi, float snr) {
 // Publish a complete packet's worth of sensor topics — called from the
 // dispatcher after a valid RX.
 ////////////////////////////////////////////////////////////////////////////////
-void publishOne(const char* topic, const String& value, bool retained = false) {
+void publishOne(const char* topic, const String& value, bool retained) {
   mqttClient.beginMessage(topic, retained, retained ? 1 : 0);
   mqttClient.print(value);
   mqttClient.endMessage();
