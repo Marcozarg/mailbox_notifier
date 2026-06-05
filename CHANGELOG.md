@@ -78,6 +78,17 @@ wakes on lid-open ISR, reads BME280, transmits key=value LoRa packet at +20 dBm,
   `PORF`→"power-on", `EXTRF`→"external reset", `WDRF`→"watchdog",
   `BORF`→"brown-out", none→"normal" (was "unknown" — Caterina often clears MCUSR).
 
+### V2.1.0 — 2026-06-05
+- Heartbeat packets (type=2/3) now transmit at +14 dBm via RFO pin instead of
+  +20 dBm PA_BOOST. Measured RSSI is −70 to −84 dBm; dropping 6 dB yields
+  worst-case ~−90 dBm, still 35 dB above SF9 sensitivity (~−125 dBm).
+  TX current: ~29 mA vs ~120 mA — 4× reduction for routine heartbeats.
+  Reed (type=1) and boot (type=4) packets keep full +20 dBm for reliability.
+  New constant: `LORA_HB_TX_POWER 14` (RFO pin).
+- `readVbatMv()`: removed unnecessary `delay(2)` between ADC samples —
+  `analogRead()` already blocks until conversion completes. Sample count
+  reduced from 8 → 4 (sufficient for a slowly-varying battery voltage).
+
 ---
 
 ## Receiver

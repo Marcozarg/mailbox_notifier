@@ -1,3 +1,17 @@
+// V2.1.0 — 2026-06-05 — Lower TX power for heartbeats; ADC sample cleanup
+//
+// V2.1.0 changes:
+//   • Heartbeat packets (type=2/3) now transmit at +14 dBm via RFO pin
+//     instead of +20 dBm PA_BOOST. Measured RSSI is −70 to −84 dBm;
+//     dropping 6 dB yields worst-case ~−90 dBm, still 35 dB above SF9
+//     sensitivity (~−125 dBm). TX current drops from ~120 mA → ~29 mA
+//     for heartbeats (4× reduction). Reed and boot packets (type=1/4)
+//     keep full +20 dBm PA_BOOST for reliability.
+//     New constant: LORA_HB_TX_POWER 14 (RFO pin).
+//   • readVbatMv(): removed 8× delay(2) between ADC samples (analogRead()
+//     already blocks until conversion completes) and reduced sample count
+//     from 8 → 4. Battery voltage changes slowly; 4 samples is plenty.
+//
 // V2.0.0 — 2026-06-02 — Version milestone: project documentation overhaul
 //
 // V2.0.0 changes:
@@ -125,7 +139,7 @@
 // Single source of truth for the firmware version string. Used by the boot
 // SLOG banner. Update this when bumping the version stamp at the top of the
 // file so the runtime log matches the header without manual sync.
-#define FW_VERSION "V2.0.0"
+#define FW_VERSION "V2.1.0"
 //
 // Battery-powered mailbox sensor:
 //   • Sleeps in AVR PWR_DOWN (~10 µA + LiPo charger leakage) almost continuously.
@@ -212,17 +226,13 @@
 #define LORA_FREQ       866E6      // EU 868 MHz ISM band
 #define LORA_BW         250E3      // Hz
 #define LORA_SF         9          // spreading factor 6..12
-#define LORA_TX_POWER   20         // dBm — overshoots EU 14 dBm ERP limit on paper but
-                                   //       at 50 m through one tree, headroom matters more
-                                   //       than strict compliance for a hobby project.
-                                   //
-                                   // V1.0.7 NOTE: external +2 dBi antenna installed but
-                                   // TX power deliberately kept at +20 dBm per user request.
-                                   // Net ERP rises ~+2 dB vs the wire-stub config. If link
-                                   // becomes flaky at lower battery voltages, this is the
-                                   // first knob to look at — dropping to +12 dBm would
-                                   // halve the per-TX current draw (120 mA → ~50 mA) at
-                                   // the cost of about 8 dB of link margin.
+#define LORA_TX_POWER    20        // dBm PA_BOOST — reed (type=1) and boot (type=4) packets.
+                                   // Keeps full power for the mail-arrived path where
+                                   // reliability matters most. Measured RSSI: −70…−84 dBm.
+#define LORA_HB_TX_POWER 14        // dBm RFO pin — heartbeats (type=2/3) only.
+                                   // 6 dB less than LORA_TX_POWER → worst-case ~−90 dBm,
+                                   // still 35 dB above SF9 sensitivity (~−125 dBm).
+                                   // TX current: ~29 mA vs ~120 mA at +20 dBm (4× saving).
 
 ////////////////////////////////////////////////////////////////////////////////
 // Heartbeat scheduling — counted in 32 s "ticks" (V1.0.9 energy option B).
@@ -636,12 +646,11 @@ void initLora() {
 ////////////////////////////////////////////////////////////////////////////////
 uint16_t readVbatMv() {
   uint32_t sum = 0;
-  for (uint8_t i = 0; i < 8; i++) {
-    sum += analogRead(PIN_VBAT);
-    delay(2);
+  for (uint8_t i = 0; i < 4; i++) {
+    sum += analogRead(PIN_VBAT);  // analogRead blocks until conversion done; no delay needed
   }
-  uint32_t avg = sum / 8;
-  return (uint16_t) ((avg * 2UL * 3300UL) / 1024UL);
+  uint32_t avg = sum / 4;
+  return (uint16_t)((avg * 2UL * 3300UL) / 1024UL);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -701,6 +710,12 @@ void sendPacket(uint8_t pktType) {
   SLOGF(F("TX: "), pkt);
 
   LoRa.idle();                          // standby — needed before TX
+  // Heartbeats use RFO pin at reduced power; reed/boot keep full PA_BOOST.
+  if (pktType == 2 || pktType == 3) {
+    LoRa.setTxPower(LORA_HB_TX_POWER, PA_OUTPUT_RFO_PIN);
+  } else {
+    LoRa.setTxPower(LORA_TX_POWER);
+  }
   LoRa.beginPacket();
   LoRa.print(pkt);
   LoRa.endPacket();                     // blocks until TX done (~190 ms @ SF9/250k for 70 B)
