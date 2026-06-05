@@ -1,3 +1,13 @@
+// V2.3.0 — 2026-06-05 — Battery days remaining sensor
+//
+// V2.3.0 changes:
+//   • New sensor: estimated days of battery life remaining.
+//     Computed from sender's vbat using the same piecewise LiPo curve as
+//     batteryPercentString(), scaled by 7.33 days/percent (2000 mAh total
+//     ÷ 2.73 mAh/day average drain — circuit + self-discharge combined).
+//     Published retained to mailbox/sender/battery_days.
+//     New HA discovery entity: sensor.mailbox_sender_battery_days (24th).
+//
 // V2.2.0 — 2026-06-03 — New: last_mail_at timestamp sensor + CRC error counter
 //
 // V2.2.0 changes:
@@ -341,7 +351,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.2.0"
+#define FW_VERSION "V2.3.0"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -425,6 +435,7 @@ const char T_S_HUMIDITY[]         = "mailbox/sender/humidity";
 const char T_S_PRESSURE[]         = "mailbox/sender/pressure";
 const char T_S_BATTERY_VOLTAGE[]  = "mailbox/sender/battery_voltage";
 const char T_S_BATTERY_PERCENT[]  = "mailbox/sender/battery_percent";
+const char T_S_BATTERY_DAYS[]    = "mailbox/sender/battery_days";
 const char T_S_PACKET_SEQ[]       = "mailbox/sender/packet_seq";
 const char T_S_LAST_PACKET_TYPE[] = "mailbox/sender/last_packet_type";
 const char T_S_BOOT_COUNT[]       = "mailbox/sender/boot_count";
@@ -580,6 +591,7 @@ void renderOled();
 void handleButton();
 void clearMailState(const char* source);
 String batteryPercentString(uint16_t mv);
+int    batteryDaysRemaining(uint16_t mv);
 
 ////////////////////////////////////////////////////////////////////////////////
 // LoRa ISR — set flag, do nothing else (SPI not safe in interrupt context).
@@ -1055,8 +1067,9 @@ void publishDiscoveryAll() {
   // for the V1.1.0/V1.1.1 discovery payloads.
   // V2.1.0: rssi, snr, last_seen, freq_error, packet_loss moved to sender_*.
   // V2.2.0: added last_mail_at + receiver_crc_errors. 21 → 23 entities.
+  // V2.3.0: added sender_battery_days. 23 → 24 entities.
   clearOldDiscovery();
-  LOG("disc", "Publishing 23 entity configs");
+  LOG("disc", "Publishing 24 entity configs");
 
   // ---- Headline ------------------------------------------------------------
   // binary_sensor.mailbox_state — sticky, payload MAIL/EMPTY.
@@ -1077,6 +1090,8 @@ void publishDiscoveryAll() {
                       T_S_BATTERY_VOLTAGE, "voltage", "V", "measurement", "diagnostic");
   publishOneDiscovery("sensor", "sender_battery", "Sender battery",
                       T_S_BATTERY_PERCENT, "battery", "%", "measurement", nullptr);
+  publishOneDiscovery("sensor", "sender_battery_days", "Sender battery days",
+                      T_S_BATTERY_DAYS, nullptr, "d", nullptr, "diagnostic");
 
   // Packet bookkeeping. state_class intentionally absent — HA rejects state_class
   // without unit_of_measurement, and a sequence counter has no natural unit.
@@ -1300,6 +1315,7 @@ void publishOnePacket() {
   }
   publishOne(T_S_BATTERY_VOLTAGE,  String(lastPkt.vbatMv / 1000.0, 2),         true);
   publishOne(T_S_BATTERY_PERCENT,  batteryPercentString(lastPkt.vbatMv),       true);
+  publishOne(T_S_BATTERY_DAYS,     String(batteryDaysRemaining(lastPkt.vbatMv)), true);
   publishOne(T_S_PACKET_SEQ,       String(lastPkt.seq),                        true);
   publishOne(T_S_RSSI,             String(lastPkt.rssi, 1),                    true);
   publishOne(T_S_SNR,              String(lastPkt.snr,  1),                    true);
@@ -1352,6 +1368,26 @@ String batteryPercentString(uint16_t mv) {
   if (pct < 0)   pct = 0;
   if (pct > 100) pct = 100;
   return String(pct);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Estimated days of battery life remaining. Uses the same piecewise curve as
+// batteryPercentString() to get remaining-capacity fraction, then scales by
+// 7.33 days/percent (= 2000 mAh ÷ 2.73 mAh/day; 2.73 = 1.49 circuit drain
+// + 1.23 self-discharge). Result is intentionally rough — ±20 % is realistic.
+////////////////////////////////////////////////////////////////////////////////
+int batteryDaysRemaining(uint16_t mv) {
+  if (mv == 0) return 0;
+  float v = mv / 1000.0f;
+  float pct;
+  if      (v >= 4.20f) pct = 100.0f;
+  else if (v >= 3.85f) pct = 50.0f + (v - 3.85f) / (4.20f - 3.85f) * 50.0f;
+  else if (v >= 3.60f) pct = 20.0f + (v - 3.60f) / (3.85f - 3.60f) * 30.0f;
+  else if (v >= 3.30f) pct =         (v - 3.30f) / (3.60f - 3.30f) * 20.0f;
+  else                 pct = 0.0f;
+  if (pct < 0.0f)   pct = 0.0f;
+  if (pct > 100.0f) pct = 100.0f;
+  return (int)(pct * 7.33f);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

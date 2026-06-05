@@ -287,6 +287,13 @@ Key improvements over V2_real:
   Changed unique_id to `"reboot_receiver"` to match. Old retained config topic
   `homeassistant/button/receiver_reboot/config` added to `clearOldDiscovery()`.
 
+### V2.3.0 — 2026-06-05
+- New sensor: estimated days of battery life remaining (`mailbox/sender/battery_days`).
+  Computed in the receiver from the sender's vbat using the same piecewise LiPo curve
+  as `batteryPercentString()`, scaled by 7.33 days/percent (2000 mAh total capacity
+  ÷ 2.73 mAh/day average drain — circuit consumption + self-discharge combined).
+  New HA discovery entity: `sensor.mailbox_sender_battery_days` (24th entity, diagnostic).
+
 ### V2.2.0 — 2026-06-03
 - **NEW** — Last-mail-at sensor: receiver records the NTP timestamp when state
   transitions to MAIL and publishes it retained to `mailbox/last_mail_at`.
