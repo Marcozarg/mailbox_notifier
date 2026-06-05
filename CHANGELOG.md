@@ -78,6 +78,14 @@ wakes on lid-open ISR, reads BME280, transmits key=value LoRa packet at +20 dBm,
   `PORF`→"power-on", `EXTRF`→"external reset", `WDRF`→"watchdog",
   `BORF`→"brown-out", none→"normal" (was "unknown" — Caterina often clears MCUSR).
 
+### V2.1.1 — 2026-06-05
+- `cache` struct gains `vbatMv` field; `readVbatMv()` stores result there before
+  returning. `buildPacket()` now reads `cache.vbatMv` directly — one ADC conversion
+  per TX event instead of two (heartbeat path previously called `readVbatMv()` in
+  `loop()` to determine type, then again inside `buildPacket()`).
+- Reed event and boot TX paths: added explicit `readVbatMv()` call before `sendPacket()`
+  so `cache.vbatMv` is always fresh.
+
 ### V2.1.0 — 2026-06-05
 - Heartbeat packets (type=2/3) now transmit at +14 dBm via RFO pin instead of
   +20 dBm PA_BOOST. Measured RSSI is −70 to −84 dBm; dropping 6 dB yields

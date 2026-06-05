@@ -1,3 +1,14 @@
+// V2.1.1 — 2026-06-05 — Eliminate double vbat ADC read per TX event
+//
+// V2.1.1 changes:
+//   • `cache` struct gains `vbatMv` field. `readVbatMv()` stores the result
+//     there before returning. `buildPacket()` now reads `cache.vbatMv`
+//     directly instead of calling `readVbatMv()` again — one ADC conversion
+//     per TX event instead of two.
+//   • Reed events and boot TX: added explicit `readVbatMv()` call before
+//     `sendPacket()` so cache.vbatMv is always fresh (previously relied on
+//     buildPacket() doing it; heartbeat path was unaffected).
+//
 // V2.1.0 — 2026-06-05 — Lower TX power for heartbeats; ADC sample cleanup
 //
 // V2.1.0 changes:
@@ -139,7 +150,7 @@
 // Single source of truth for the firmware version string. Used by the boot
 // SLOG banner. Update this when bumping the version stamp at the top of the
 // file so the runtime log matches the header without manual sync.
-#define FW_VERSION "V2.1.0"
+#define FW_VERSION "V2.1.1"
 //
 // Battery-powered mailbox sensor:
 //   • Sleeps in AVR PWR_DOWN (~10 µA + LiPo charger leakage) almost continuously.
@@ -293,13 +304,15 @@ uint8_t       lockoutTicksRemaining = 0;   // 32 s logical ticks of reed-ignore 
                                            // logic removed — sender TXs only
                                            // on lid-open edge again.)
 
-// BME280 last-known values — used when the chip fails to respond. The receiver's
-// sensor_ok flag tells HA whether to trust them.
+// Sensor cache — BME280 last-known values + most recent vbat reading.
+// All fields updated before every sendPacket(); buildPacket() reads from here
+// so there is exactly one ADC conversion per TX event (no double-read).
 struct {
   float    tempC       = 21.0;             // sensible defaults for first boot
   uint8_t  humidPct    = 50;
   float    pressureHpa = 1013.0;
   bool     ok          = false;
+  uint16_t vbatMv      = 3700;            // updated by readVbatMv()
 } cache;
 
 Adafruit_BME280 bme;
@@ -386,10 +399,10 @@ void setup() {
   initBme();
   readSensors();        // first read for the boot packet
   initLora();
+  uint16_t v = readVbatMv();   // populate cache.vbatMv before boot TX; reuse for hb schedule
   sendPacket(4);        // type 4 = boot
 
   // Initial heartbeat schedule: based on current battery.
-  uint16_t v = readVbatMv();
   heartbeatTicks = (v < LOW_BATT_MV) ? HB_TICKS_LOW_BATT : HB_TICKS_NORMAL;
   SLOGF(F("vbat_mv="), v);
   SLOGF(F("hb_ticks="), heartbeatTicks);
@@ -454,6 +467,7 @@ void loop() {
   if (reedNow && !lastReedRead && (millis() - lastReedTxMs > 5000)) {
     SLOG("[snd] DEBUG: reed event → TX type=1");
     readSensors();
+    readVbatMv();
     sendPacket(1);
     reedEventCount++;
     EEPROM.put(EE_REED_COUNT_ADDR, reedEventCount);
@@ -511,6 +525,7 @@ void loop() {
     reedFlag = false;
     SLOG("[snd] reed wake");
     readSensors();
+    readVbatMv();                           // populate cache.vbatMv for buildPacket()
     sendPacket(1);                          // type 1 = reed event (mail arrived)
     reedEventCount++;
     EEPROM.put(EE_REED_COUNT_ADDR, reedEventCount);
@@ -650,7 +665,8 @@ uint16_t readVbatMv() {
     sum += analogRead(PIN_VBAT);  // analogRead blocks until conversion done; no delay needed
   }
   uint32_t avg = sum / 4;
-  return (uint16_t)((avg * 2UL * 3300UL) / 1024UL);
+  cache.vbatMv = (uint16_t)((avg * 2UL * 3300UL) / 1024UL);
+  return cache.vbatMv;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -673,7 +689,7 @@ uint16_t readVbatMv() {
 //   fw   = firmware version string (V1.0.9: new — receiver publishes to HA)
 ////////////////////////////////////////////////////////////////////////////////
 String buildPacket(uint8_t pktType) {
-  uint16_t vbat   = readVbatMv();
+  uint16_t vbat   = cache.vbatMv;   // populated by readVbatMv() before every sendPacket()
   uint8_t  reedHi = (digitalRead(PIN_REED) == LOW) ? 1 : 0;   // LOW pin = reed CLOSED = lid OPEN
 
   String pkt;
