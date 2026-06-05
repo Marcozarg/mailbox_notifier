@@ -2,7 +2,7 @@
 
 LoRa-based mailbox sensor that pings Home Assistant (and your phone via Pushover) when
 the postman opens your mailbox lid. Sender lives 50 m away in the mailbox, runs on a
-2000 mAh LiPo for ~150 days. Receiver bridges LoRa packets to MQTT and Home Assistant.
+2000 mAh LiPo for ~700 days. Receiver bridges LoRa packets to MQTT and Home Assistant.
 
 Field-tested at **-70 to -84 dBm RSSI** through one large tree at 50 m.
 
@@ -373,7 +373,7 @@ Set these **before** compiling. All live at the top of `mailbox_sender_V3.ino`.
 1. Open Node-RED in HA (HA → Add-ons → Node-RED → Open Web UI)
 2. Menu (top right) → **Import**
 3. Paste the contents of `Node-RED/Node-RED_mail_arrived.txt` → Import
-4. Repeat for `Node-RED_battery_low.txt` and `Node-RED_sender_boot.txt`
+4. Repeat for `Node-RED_battery_low.txt`, `Node-RED_sender_boot.txt`, and `Node-RED_no_mail_alert.txt`
 5. Click **Deploy**
 6. Trigger the sender → Pushover notification should arrive
 
@@ -444,7 +444,7 @@ Before every flash — sender or receiver:
 ### OLED layout
 
 ```
-WiFi MQTT  10:42           V1.3.0   ← top row: connection status + clock + FW version
+WiFi MQTT  10:42           V2.3.0   ← top row: connection status + clock + FW version
                                     
          M A I L !                  ← big state (or "—" when empty)
                                     
