@@ -115,6 +115,7 @@ Forward-compatible by design — receiver ignores unknown keys.
 | `mailbox/sender/pressure` | RX → HA | no | hPa |
 | `mailbox/sender/battery_voltage` | RX → HA | yes | V |
 | `mailbox/sender/battery_percent` | RX → HA | yes | %, computed from LiPo curve |
+| `mailbox/sender/battery_days` | RX → HA | yes | estimated days remaining (V2.3.0+) |
 | `mailbox/sender/packet_seq` | RX → HA | yes | sequence counter |
 | `mailbox/sender/last_packet_type` | RX → HA | yes | human label: mail / heartbeat / heartbeat (low batt) / boot |
 | `mailbox/sender/boot_count` | RX → HA | yes | EEPROM-backed |
@@ -138,9 +139,9 @@ Forward-compatible by design — receiver ignores unknown keys.
 
 ## Home Assistant integration
 
-### MQTT discovery — 23 entities
+### MQTT discovery — 24 entities
 
-Receiver publishes 21 retained `homeassistant/.../config` payloads at every boot. HA
+Receiver publishes 24 retained `homeassistant/.../config` payloads at every boot. HA
 auto-creates all entities under one **"Mailbox"** device card — no `configuration.yaml`
 editing needed.
 
@@ -152,6 +153,7 @@ editing needed.
 | `sensor.mailbox_sender_pressure` | sensor | pressure | hPa |
 | `sensor.mailbox_sender_battery_voltage` | sensor | voltage | V, diagnostic |
 | `sensor.mailbox_sender_battery` | sensor | battery | %, diagnostic |
+| `sensor.mailbox_sender_battery_days` | sensor | — | estimated days remaining, diagnostic (V2.3.0+) |
 | `sensor.mailbox_sender_packet_seq` | sensor | — | diagnostic |
 | `sensor.mailbox_sender_last_packet_type` | sensor | — | diagnostic |
 | `sensor.mailbox_sender_boot_count` | sensor | — | diagnostic |
@@ -331,12 +333,12 @@ Set these **before** compiling. All live at the top of `mailbox_sender_V3.ino`.
 - Upload → watch Serial Monitor (115200 baud)
 - Wait for: `[disc] Publishing 21 entity configs`
 - In HA → Settings → Devices & Services → MQTT: "Mailbox" device should appear with
-  21 entities. If it doesn't appear within 30 s, check that `arduino_secrets.h` has
+  24 entities. If it doesn't appear within 30 s, check that `arduino_secrets.h` has
   the correct broker address.
 
 **2. Verify HA entities**
 
-- Mailbox device card should show all 21 entities grouped correctly
+- Mailbox device card should show all 24 entities grouped correctly
 - `binary_sensor.mailbox_state` should be `EMPTY`
 - `binary_sensor.mailbox_receiver_online` should be `true`
 
@@ -479,7 +481,7 @@ prevent duplicate notifications:
 | # | Decision | Choice | Why |
 |---|---|---|---|
 | 1 | Packet format | Key=value ASCII | Human-readable, forward-compatible (receiver ignores unknown keys), easy to debug on OLED. Binary would save ~80 ms airtime — not worth it at 1–2 packets/day |
-| 2 | MQTT discovery | Yes | HA auto-creates all 21 entities; no `configuration.yaml` to maintain |
+| 2 | MQTT discovery | Yes | HA auto-creates all 24 entities; no `configuration.yaml` to maintain |
 | 3 | Heartbeat cadence | 48 h normal, 6 h when vbat < 3.6 V | 48 h halves TX count vs original 24 h; low-batt boost preserves dead-battery visibility without cost |
 | 4 | Sender-alive timeout | 98 h (48 h × 2 + 2 h slack) | Tolerates one missed heartbeat before alerting |
 | 5 | Sticky mail state | Manual clear only | Auto-clear on lid-close adds complexity with no benefit — user clears when they pick up the mail |
