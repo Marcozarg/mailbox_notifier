@@ -4,7 +4,7 @@ LoRa-based mailbox sensor that pings Home Assistant (and your phone via Pushover
 the postman opens your mailbox lid. Sender lives 50 m away in the mailbox, runs on a
 2000 mAh LiPo for ~150 days. Receiver bridges LoRa packets to MQTT and Home Assistant.
 
-Field-tested at **-58 dBm RSSI / +11 dB SNR** through one large tree at 50 m.
+Field-tested at **-70 to -84 dBm RSSI** through one large tree at 50 m.
 
 ```
 ┌────────────────────────┐                              ┌──────────────────────────┐
@@ -71,7 +71,7 @@ Both ends must match exactly.
 | Frequency | 866.0 MHz |
 | Bandwidth | 250 kHz |
 | Spreading factor | 9 |
-| TX power (sender) | +20 dBm |
+| TX power (sender) | +20 dBm PA_BOOST (reed/boot) · +14 dBm RFO (heartbeats) |
 | Hardware CRC | enabled |
 | Coding rate | 4/5 (library default) |
 
@@ -307,7 +307,7 @@ Set these **before** compiling. All live at the top of `mailbox_sender_V3.ino`.
 | `DEBUG_HEARTBEAT_30S` | `0` | optional | Sub-toggle inside `DEBUG_NOSLEEP`: also fire heartbeat every 30 s |
 | `ENABLE_SERIAL` | `0` | `1` | Compile Serial debug in/out |
 | `DEBUG_LED` | `0` | `1` | Blue LED on D5 blinks ~100 ms after every LoRa TX |
-| `BOOT_UPLOAD_WINDOW_MS` | `10000` | n/a | Holds USB-CDC alive 10 s after boot for OTA-less re-flash via auto-reset |
+| `BOOT_UPLOAD_WINDOW_MS` | `20000` | n/a | Holds USB-CDC alive 20 s after boot for re-flash via auto-reset. USB is disabled after this window. |
 
 **For field deployment:** all set to `0`.
 
@@ -360,9 +360,9 @@ Set these **before** compiling. All live at the top of `mailbox_sender_V3.ino`.
 
 - Set `DEBUG_NOSLEEP 0`, `ENABLE_SERIAL 0`, `DEBUG_LED 0`
 - Re-flash the sender
-- After `setup()` there is a 10 s upload window (`BOOT_UPLOAD_WINDOW_MS`). If you need
+- After `setup()` there is a 20 s upload window (`BOOT_UPLOAD_WINDOW_MS`). If you need
   to re-flash without opening the mailbox: press Reset on the Feather, wait 3 s, click
-  Upload in Arduino IDE.
+  Upload in Arduino IDE. USB is permanently disabled after the window closes.
 
 ---
 
@@ -388,7 +388,7 @@ Once the receiver is running, Arduino IDE lists it as a network port:
   (the receiver has no OTA password — trust the LAN)
 - OLED shows live `OTA xx%` during upload
 
-The sender has no OTA — flashing it requires USB cable and the 10 s upload window
+The sender has no OTA — flashing it requires USB cable and the 20 s upload window
 (or a physical trip to the mailbox to press Reset).
 
 ---
@@ -506,7 +506,7 @@ prevent duplicate notifications:
 | `DEBUG_HEARTBEAT_30S` | `0` | optional | Sub-toggle: fire heartbeat every 30 s while `DEBUG_NOSLEEP` is on |
 | `ENABLE_SERIAL` | `0` | `1` | Compile Serial debug in/out |
 | `DEBUG_LED` | `0` | `1` | Blue LED on D5 blinks ~100 ms per TX |
-| `BOOT_UPLOAD_WINDOW_MS` | `10000` | n/a | USB-CDC stays alive 10 s after boot for re-flash via auto-reset |
+| `BOOT_UPLOAD_WINDOW_MS` | `20000` | n/a | USB-CDC stays alive 20 s after boot for re-flash via auto-reset. USB disabled after window. |
 
 ### Receiver
 
