@@ -78,6 +78,16 @@ wakes on lid-open ISR, reads BME280, transmits key=value LoRa packet at +20 dBm,
   `PORF`→"power-on", `EXTRF`→"external reset", `WDRF`→"watchdog",
   `BORF`→"brown-out", none→"normal" (was "unknown" — Caterina often clears MCUSR).
 
+### V2.2.0 — 2026-06-05
+- Boot upload window extended from 10 s → 20 s (`BOOT_UPLOAD_WINDOW_MS 20000`).
+  More time to trigger an Arduino IDE upload after resetting the sender in the field.
+- USB permanently disabled after the boot window (`disableUsb()` called at end of
+  `setup()`, field mode only). Eliminates USB controller, PLL, and voltage regulator
+  current between sleep cycles. Battery charging via MCP73831 is unaffected —
+  the charger IC is wired directly to VBUS and operates independently of the MCU.
+- Analog comparator disabled in `setup()`: `ACSR = (1<<ACD)`. Not used in this
+  sketch; eliminates active-mode current during brief inter-sleep wake windows.
+
 ### V2.1.1 — 2026-06-05
 - `cache` struct gains `vbatMv` field; `readVbatMv()` stores result there before
   returning. `buildPacket()` now reads `cache.vbatMv` directly — one ADC conversion

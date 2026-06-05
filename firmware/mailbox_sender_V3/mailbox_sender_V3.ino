@@ -1,3 +1,16 @@
+// V2.2.0 — 2026-06-05 — Boot window 20 s; disable USB + analog comparator
+//
+// V2.2.0 changes:
+//   • BOOT_UPLOAD_WINDOW_MS raised from 10 000 → 20 000 ms. Gives more time
+//     to trigger an Arduino IDE upload after resetting the sender in the field.
+//   • After BOOT_UPLOAD_WINDOW_MS (field mode only), permanently disable the
+//     32u4 USB controller, PLL, and voltage regulator via disableUsb(). USB
+//     is not needed once the upload window closes. Charging via USB is
+//     unaffected — the MCP73831 charger IC is wired directly to VBUS.
+//     New helper: disableUsb() (forward-declared, defined after sleep32s()).
+//   • Disable analog comparator in setup(): ACSR = (1<<ACD). Not used in
+//     this sketch; saves active-mode current during brief inter-sleep wakes.
+//
 // V2.1.1 — 2026-06-05 — Eliminate double vbat ADC read per TX event
 //
 // V2.1.1 changes:
@@ -150,7 +163,7 @@
 // Single source of truth for the firmware version string. Used by the boot
 // SLOG banner. Update this when bumping the version stamp at the top of the
 // file so the runtime log matches the header without manual sync.
-#define FW_VERSION "V2.1.1"
+#define FW_VERSION "V2.2.0"
 //
 // Battery-powered mailbox sensor:
 //   • Sleeps in AVR PWR_DOWN (~10 µA + LiPo charger leakage) almost continuously.
@@ -199,9 +212,8 @@
 // dropping into the deep-sleep loop. Only used in field mode (DEBUG_NOSLEEP=0).
 // During this window USB-CDC stays enumerated → Arduino IDE auto-reset upload
 // works normally → no Caterina double-tap dance for routine reflashes.
-// Cost: 10 s × ~25 mA = 250 mAs once per cold boot. With ~1 boot/year in
-// production this is utterly negligible vs the 2000 mAh battery.
-#define BOOT_UPLOAD_WINDOW_MS  10000UL
+// Cost: 20 s × ~15 mA = 300 mAs once per cold boot. Negligible vs 2000 mAh battery.
+#define BOOT_UPLOAD_WINDOW_MS  20000UL
 
 ////////////////////////////////////////////////////////////////////////////////
 // Includes
@@ -346,6 +358,7 @@ void reedWakeISR() {
 // Forward declarations
 ////////////////////////////////////////////////////////////////////////////////
 const char* bootReasonStr();
+void disableUsb();
 void initEeprom();
 void initBme();
 void initLora();
@@ -390,6 +403,8 @@ void setup() {
   digitalWrite(PIN_LED, LOW);
 #endif
 
+  ACSR = (1<<ACD);   // disable analog comparator — not used in this sketch
+
   initEeprom();
   bootCount++;
   EEPROM.put(EE_BOOT_COUNT_ADDR, bootCount);
@@ -414,9 +429,10 @@ void setup() {
   // does NOT disable USB; the host stays enumerated for the full 10 s.
   // After the window we drop into the deep-sleep loop and USB-CDC dies until
   // the next reset.
-  SLOG("[snd] upload window 10s — Reset+Upload now to flash easily");
+  SLOG("[snd] upload window 20s — Reset+Upload now to flash easily");
   delay(BOOT_UPLOAD_WINDOW_MS);
   SLOG("[snd] entering sleep loop");
+  disableUsb();   // USB no longer needed; kills controller, PLL, and voltage reg
 #endif
 }
 
@@ -774,4 +790,20 @@ bool sleep32s() {
     if (reedFlag) return true;                        // reed wake — let loop() handle it
   }
   return false;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// disableUsb — permanently shuts down the 32u4 USB hardware after the boot
+// window. Not called in DEBUG_NOSLEEP mode (Serial/USB must stay alive).
+// Battery charging via MCP73831 is unaffected — it runs off VBUS directly.
+//
+// Sequence matters: detach → freeze clock → stop PLL → disable controller
+// → kill voltage regulator.
+////////////////////////////////////////////////////////////////////////////////
+void disableUsb() {
+  UDCON  |= (1<<DETACH);    // disconnect D+ — host sees device removal
+  USBCON  = (1<<FRZCLK);   // freeze USB clock before disabling
+  PLLCSR &= ~(1<<PLLE);    // stop USB PLL
+  USBCON  = 0;              // disable USB controller + VBUS pad
+  UHWCON  = 0;              // disable USB voltage regulator
 }
