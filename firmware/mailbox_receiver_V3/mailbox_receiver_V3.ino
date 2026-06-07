@@ -1,3 +1,16 @@
+// V2.4.0 — 2026-06-06 — AES-128-CTR decryption (receiver side)
+//
+// V2.4.0 changes:
+//   • Receiver now handles both encrypted and legacy plaintext LoRa packets.
+//     Encrypted packets begin with magic byte 0xAE followed by a 4-byte IV
+//     seed [seq, boot_lo, boot_hi, 0x00], then the AES-128-CTR ciphertext.
+//     Receiver decrypts using mbedTLS (built into Arduino-ESP32) and the
+//     pre-shared key LORA_AES_KEY from arduino_secrets.h.
+//     Packets that do NOT start with 0xAE are handled as legacy plaintext —
+//     no service gap during the sender upgrade transition.
+//     Sender firmware V2.3.0 (encrypts outgoing packets) is a separate step
+//     requiring a physical trip to the mailbox.
+//
 // V2.3.0 — 2026-06-05 — Battery days remaining sensor
 //
 // V2.3.0 changes:
@@ -351,7 +364,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.3.0"
+#define FW_VERSION "V2.4.0"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -399,8 +412,9 @@
 #include <ArduinoOTA.h>
 #include <esp_task_wdt.h>         // ESP-IDF watchdog API exposed in Arduino-ESP32
 #include <time.h>                 // POSIX time API for NTP-synced clock
+#include <mbedtls/aes.h>          // AES-128-CTR decrypt — part of Arduino-ESP32, no extra install
 
-#include "arduino_secrets.h"      // SECRET_SSID / SECRET_PASS / MQTTUSER / MQTTPASS / MQTTBROKER
+#include "arduino_secrets.h"      // SECRET_SSID / SECRET_PASS / MQTTUSER / MQTTPASS / MQTTBROKER / LORA_AES_KEY
 
 ////////////////////////////////////////////////////////////////////////////////
 // LoRa link parameters — MUST match the sender exactly, or you'll see nothing.
@@ -592,6 +606,7 @@ void handleButton();
 void clearMailState(const char* source);
 String batteryPercentString(uint16_t mv);
 int    batteryDaysRemaining(uint16_t mv);
+String loraDecrypt(const uint8_t* raw, size_t len);
 
 ////////////////////////////////////////////////////////////////////////////////
 // LoRa ISR — set flag, do nothing else (SPI not safe in interrupt context).
@@ -846,11 +861,15 @@ void loop() {
   // LoRa packet pickup.
   if (rxFlag) {
     rxFlag = false;
-    String payload;
-    radio.readData(payload);
+    uint8_t rawBuf[256];
+    memset(rawBuf, 0, sizeof(rawBuf));
+    size_t rawLen = radio.getPacketLength();
+    if (rawLen == 0 || rawLen > 255) rawLen = 255;
+    radio.readData(rawBuf, rawLen);
     if (_radiolib_status == RADIOLIB_ERR_NONE) {
       float rssi = radio.getRSSI();
       float snr  = radio.getSNR();
+      String payload = loraDecrypt(rawBuf, rawLen);
       LOG("lora", "RX [%s] rssi=%.1f snr=%.1f", payload.c_str(), rssi, snr);
       parseAndDispatch(payload, rssi, snr);
     } else {
@@ -1388,6 +1407,38 @@ int batteryDaysRemaining(uint16_t mv) {
   if (pct < 0.0f)   pct = 0.0f;
   if (pct > 100.0f) pct = 100.0f;
   return (int)(pct * 7.33f);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// LoRa packet decryption (V2.4.0).
+// Magic byte 0xAE in position 0 signals AES-128-CTR encryption.
+// Wire format: [0xAE][seq][boot_lo][boot_hi][0x00][...ciphertext...]
+// IV is the 4-byte seed padded to 16 bytes (remaining bytes are 0x00).
+// Legacy plaintext packets (first byte != 0xAE) pass through unchanged.
+////////////////////////////////////////////////////////////////////////////////
+String loraDecrypt(const uint8_t* raw, size_t len) {
+  if (len >= 5 && raw[0] == 0xAE) {
+    uint8_t iv[16] = {0};
+    iv[0] = raw[1]; iv[1] = raw[2]; iv[2] = raw[3]; iv[3] = raw[4];
+
+    const uint8_t key[16] = LORA_AES_KEY;
+    size_t cipherLen = len - 5;
+    uint8_t plain[256] = {0};                // zeroed so result is null-terminated
+
+    mbedtls_aes_context ctx;
+    mbedtls_aes_init(&ctx);
+    mbedtls_aes_setkey_enc(&ctx, key, 128);  // CTR mode uses the encryption key for both directions
+    uint8_t nc[16], sb[16];
+    size_t nc_off = 0;
+    memcpy(nc, iv, 16);
+    memset(sb, 0, 16);
+    mbedtls_aes_crypt_ctr(&ctx, cipherLen, &nc_off, nc, sb, raw + 5, plain);
+    mbedtls_aes_free(&ctx);
+
+    return String((char*)plain);
+  }
+  // Legacy plaintext — sender has not yet been upgraded.
+  return String((char*)raw, len);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

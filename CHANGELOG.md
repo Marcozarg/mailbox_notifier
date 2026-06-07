@@ -287,6 +287,17 @@ Key improvements over V2_real:
   Changed unique_id to `"reboot_receiver"` to match. Old retained config topic
   `homeassistant/button/receiver_reboot/config` added to `clearOldDiscovery()`.
 
+### V2.4.0 — 2026-06-06
+- AES-128-CTR decryption support (receiver side).
+  Encrypted packets are identified by magic byte `0xAE` in position 0, followed
+  by a 4-byte IV seed `[seq, boot_lo, boot_hi, 0x00]` and the ciphertext.
+  Decryption uses mbedTLS (built into Arduino-ESP32) with pre-shared key
+  `LORA_AES_KEY` from `arduino_secrets.h`.
+  Legacy plaintext packets (first byte ≠ `0xAE`) are passed through unchanged,
+  so the receiver can be OTA-flashed before the sender is upgraded — no service
+  gap during the transition. Sender-side encryption (V2.3.0) requires a
+  separate trip to the mailbox.
+
 ### V2.3.0 — 2026-06-05
 - New sensor: estimated days of battery life remaining (`mailbox/sender/battery_days`).
   Computed in the receiver from the sender's vbat using the same piecewise LiPo curve
