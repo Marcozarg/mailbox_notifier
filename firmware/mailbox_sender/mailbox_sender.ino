@@ -1,3 +1,14 @@
+// V2.3.0 — 2026-06-06 — AES-128-CTR packet encryption
+//
+// V2.3.0 changes:
+//   • All LoRa packets are now AES-128-CTR encrypted before transmission.
+//     Wire format: [0xAE][seq][boot_lo][boot_hi][0x00][...ciphertext...]
+//     The 5-byte unencrypted prefix carries the magic byte (0xAE) and the
+//     IV seed used by the receiver to decrypt. Key is LORA_AES_KEY from
+//     arduino_secrets.h (gitignored, never committed).
+//     Uses rweather Crypto library (AES128 + CTR<>) — AVR-compatible.
+//     Receiver V2.4.0 already handles both encrypted and plaintext packets.
+//
 // V2.2.0 — 2026-06-05 — Boot window 20 s; disable USB + analog comparator
 //
 // V2.2.0 changes:
@@ -163,7 +174,7 @@
 // Single source of truth for the firmware version string. Used by the boot
 // SLOG banner. Update this when bumping the version stamp at the top of the
 // file so the runtime log matches the header without manual sync.
-#define FW_VERSION "V2.2.0"
+#define FW_VERSION "V2.3.0"
 //
 // Battery-powered mailbox sensor:
 //   • Sleeps in AVR PWR_DOWN (~10 µA + LiPo charger leakage) almost continuously.
@@ -226,6 +237,10 @@
 #include <LowPower.h>              // rocketscream — wraps PWR_DOWN + WDT cleanly
 #include <EEPROM.h>
 #include <avr/wdt.h>
+#include <AES.h>                   // rweather Crypto library — AVR-compatible AES128
+#include <CTR.h>                   // rweather Crypto library — CTR mode wrapper
+
+#include "arduino_secrets.h"       // LORA_AES_KEY (gitignored)
 
 ////////////////////////////////////////////////////////////////////////////////
 // Pin assignments — match SENDER_HARDWARE.md verbatim. Don't rewire just one
@@ -741,6 +756,22 @@ void sendPacket(uint8_t pktType) {
   String pkt = buildPacket(pktType);
   SLOGF(F("TX: "), pkt);
 
+  // AES-128-CTR encrypt. IV = [seq, boot_lo, boot_hi, 0x00, 0x00...].
+  // seq is used before incrementing so IV matches the seq= field in the payload.
+  const uint8_t key[16] = LORA_AES_KEY;
+  uint8_t iv[16];
+  memset(iv, 0, sizeof(iv));
+  iv[0] = seq;
+  iv[1] = (uint8_t)(bootCount & 0xFF);
+  iv[2] = (uint8_t)(bootCount >> 8);
+
+  CTR<AES128> ctr;
+  ctr.setKey(key, 16);
+  ctr.setIV(iv, 16);
+
+  uint8_t cipherBuf[128];
+  ctr.encrypt(cipherBuf, (const uint8_t*)pkt.c_str(), pkt.length());
+
   LoRa.idle();                          // standby — needed before TX
   // Heartbeats use RFO pin at reduced power; reed/boot keep full PA_BOOST.
   if (pktType == 2 || pktType == 3) {
@@ -749,12 +780,17 @@ void sendPacket(uint8_t pktType) {
     LoRa.setTxPower(LORA_TX_POWER);
   }
   LoRa.beginPacket();
-  LoRa.print(pkt);
-  LoRa.endPacket();                     // blocks until TX done (~190 ms @ SF9/250k for 70 B)
-  LoRa.sleep();                         // back to ~0.1 µA
+  LoRa.write(0xAE);                          // magic byte — signals encrypted packet
+  LoRa.write(iv[0]);                         // seq  (IV seed byte 0)
+  LoRa.write(iv[1]);                         // boot_lo (IV seed byte 1)
+  LoRa.write(iv[2]);                         // boot_hi (IV seed byte 2)
+  LoRa.write((uint8_t)0x00);                 // reserved (IV seed byte 3)
+  LoRa.write(cipherBuf, pkt.length());
+  LoRa.endPacket();                          // blocks until TX done
+  LoRa.sleep();                              // back to ~0.1 µA
 
   blinkLed();
-  seq++;                                // wraps via uint8_t arithmetic
+  seq++;                                     // wraps via uint8_t arithmetic
 }
 
 ////////////////////////////////////////////////////////////////////////////////

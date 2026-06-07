@@ -78,6 +78,16 @@ wakes on lid-open ISR, reads BME280, transmits key=value LoRa packet at +20 dBm,
   `PORF`→"power-on", `EXTRF`→"external reset", `WDRF`→"watchdog",
   `BORF`→"brown-out", none→"normal" (was "unknown" — Caterina often clears MCUSR).
 
+### V2.3.0 — 2026-06-06
+- AES-128-CTR encryption on all outgoing LoRa packets.
+  Wire format: `[0xAE][seq][boot_lo][boot_hi][0x00][...ciphertext...]`
+  The 5-byte unencrypted prefix carries the magic byte and the IV seed;
+  receiver reconstructs the IV from these bytes and decrypts with the same key.
+  Key is `LORA_AES_KEY` from `arduino_secrets.h` (gitignored).
+  Uses rweather `Crypto` library (`AES128` + `CTR<>`), which is AVR-compatible
+  and fits within the ATmega32u4 Flash budget.
+  Receiver V2.4.0 already handles both encrypted and legacy plaintext packets.
+
 ### V2.2.0 — 2026-06-05
 - Boot upload window extended from 10 s → 20 s (`BOOT_UPLOAD_WINDOW_MS 20000`).
   More time to trigger an Arduino IDE upload after resetting the sender in the field.

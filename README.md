@@ -513,7 +513,7 @@ prevent duplicate notifications:
 | 12 | OTA password | None | Trust the LAN — password adds friction to updates with no real security gain on a home network |
 | 13 | Legacy topic compat | Removed in V1.1.0 | Clean break; old `mailboxstatus/*` topics were confusing and stale |
 | 14 | BME280 I2C address | 0x76 (SDO→GND) | Frees 0x77 if a second sensor is ever added |
-| 15 | Deferred features | buzzer, web page | Require sender reflash (physical trip) or significant complexity for marginal benefit. AES-128 receiver side done (V2.4.0); sender side pending next trip. |
+| 15 | Deferred features | buzzer, web page | Require sender reflash (physical trip) or significant complexity for marginal benefit. AES-128 fully implemented (sender V2.3.0 + receiver V2.4.0). |
 
 ---
 
@@ -555,7 +555,6 @@ can't drift between header and runtime.
 
 | Feature | Why deferred |
 |---|---|
-| AES-128 encryption (sender) | Receiver V2.4.0 already decrypts. Sender V2.3.0 adds encryption using the AVR `Crypto` library + pre-shared `LORA_AES_KEY`. Plaintext fallback in receiver means no service gap — flash sender whenever convenient. Requires physical trip to mailbox. |
 | Buzzer | Useful in-house alert, but requires GPIO wiring. Low priority when Pushover already works. |
 | Web status page | Tiny HTTP server on the receiver. Convenient, but the OLED is right there. |
 
