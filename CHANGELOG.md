@@ -78,14 +78,19 @@ wakes on lid-open ISR, reads BME280, transmits key=value LoRa packet at +20 dBm,
   `PORF`→"power-on", `EXTRF`→"external reset", `WDRF`→"watchdog",
   `BORF`→"brown-out", none→"normal" (was "unknown" — Caterina often clears MCUSR).
 
+### V2.3.1 — 2026-06-07
+- Fix: replaced rweather `Crypto` library (`AES128` + `CTR<>`) with an inline
+  AES-128-CTR implementation. The library's `RNG.cpp` defines `__vector_12`
+  (WDT interrupt), which collides with LowPower — both cannot be linked together.
+  Inline implementation uses S-box in PROGMEM (`aesExpandKey`, `aesBlock`,
+  `aesCtr128`). Wire protocol unchanged; decryption on the receiver is unaffected.
+
 ### V2.3.0 — 2026-06-06
 - AES-128-CTR encryption on all outgoing LoRa packets.
   Wire format: `[0xAE][seq][boot_lo][boot_hi][0x00][...ciphertext...]`
   The 5-byte unencrypted prefix carries the magic byte and the IV seed;
   receiver reconstructs the IV from these bytes and decrypts with the same key.
   Key is `LORA_AES_KEY` from `arduino_secrets.h` (gitignored).
-  Uses rweather `Crypto` library (`AES128` + `CTR<>`), which is AVR-compatible
-  and fits within the ATmega32u4 Flash budget.
   Receiver V2.4.0 already handles both encrypted and legacy plaintext packets.
 
 ### V2.2.0 — 2026-06-05

@@ -1,3 +1,12 @@
+// V2.3.1 — 2026-06-07 — Fix: inline AES-128-CTR; remove rweather Crypto library
+//
+// V2.3.1 changes:
+//   • Replaced rweather Crypto library (AES128 + CTR<>) with an inline
+//     AES-128-CTR implementation. The library's RNG.cpp defines __vector_12
+//     (WDT ISR), which conflicts with LowPower — both could not coexist.
+//     Inline implementation: S-box in PROGMEM, aesExpandKey(), aesBlock(),
+//     aesCtr128(). No RAM overhead vs library; identical wire protocol.
+//
 // V2.3.0 — 2026-06-06 — AES-128-CTR packet encryption
 //
 // V2.3.0 changes:
@@ -6,7 +15,6 @@
 //     The 5-byte unencrypted prefix carries the magic byte (0xAE) and the
 //     IV seed used by the receiver to decrypt. Key is LORA_AES_KEY from
 //     arduino_secrets.h (gitignored, never committed).
-//     Uses rweather Crypto library (AES128 + CTR<>) — AVR-compatible.
 //     Receiver V2.4.0 already handles both encrypted and plaintext packets.
 //
 // V2.2.0 — 2026-06-05 — Boot window 20 s; disable USB + analog comparator
@@ -174,7 +182,7 @@
 // Single source of truth for the firmware version string. Used by the boot
 // SLOG banner. Update this when bumping the version stamp at the top of the
 // file so the runtime log matches the header without manual sync.
-#define FW_VERSION "V2.3.0"
+#define FW_VERSION "V2.3.1"
 //
 // Battery-powered mailbox sensor:
 //   • Sleeps in AVR PWR_DOWN (~10 µA + LiPo charger leakage) almost continuously.
@@ -237,10 +245,9 @@
 #include <LowPower.h>              // rocketscream — wraps PWR_DOWN + WDT cleanly
 #include <EEPROM.h>
 #include <avr/wdt.h>
-#include <AES.h>                   // rweather Crypto library — AVR-compatible AES128
-#include <CTR.h>                   // rweather Crypto library — CTR mode wrapper
-
 #include "arduino_secrets.h"       // LORA_AES_KEY (gitignored)
+// No external AES library — inline implementation below avoids __vector_12
+// conflict between rweather Crypto and LowPower (both claim WDT ISR).
 
 ////////////////////////////////////////////////////////////////////////////////
 // Pin assignments — match SENDER_HARDWARE.md verbatim. Don't rewire just one
@@ -701,6 +708,86 @@ uint16_t readVbatMv() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// AES-128-CTR — inline, no external library.
+// Avoids __vector_12 (WDT ISR) conflict between rweather Crypto and LowPower.
+// S-box in PROGMEM saves 256 bytes of RAM.
+////////////////////////////////////////////////////////////////////////////////
+static const uint8_t AES_SBOX[256] PROGMEM = {
+  0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
+  0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
+  0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,
+  0x04,0xc7,0x23,0xc3,0x18,0x96,0x05,0x9a,0x07,0x12,0x80,0xe2,0xeb,0x27,0xb2,0x75,
+  0x09,0x83,0x2c,0x1a,0x1b,0x6e,0x5a,0xa0,0x52,0x3b,0xd6,0xb3,0x29,0xe3,0x2f,0x84,
+  0x53,0xd1,0x00,0xed,0x20,0xfc,0xb1,0x5b,0x6a,0xcb,0xbe,0x39,0x4a,0x4c,0x58,0xcf,
+  0xd0,0xef,0xaa,0xfb,0x43,0x4d,0x33,0x85,0x45,0xf9,0x02,0x7f,0x50,0x3c,0x9f,0xa8,
+  0x51,0xa3,0x40,0x8f,0x92,0x9d,0x38,0xf5,0xbc,0xb6,0xda,0x21,0x10,0xff,0xf3,0xd2,
+  0xcd,0x0c,0x13,0xec,0x5f,0x97,0x44,0x17,0xc4,0xa7,0x7e,0x3d,0x64,0x5d,0x19,0x73,
+  0x60,0x81,0x4f,0xdc,0x22,0x2a,0x90,0x88,0x46,0xee,0xb8,0x14,0xde,0x5e,0x0b,0xdb,
+  0xe0,0x32,0x3a,0x0a,0x49,0x06,0x24,0x5c,0xc2,0xd3,0xac,0x62,0x91,0x95,0xe4,0x79,
+  0xe7,0xc8,0x37,0x6d,0x8d,0xd5,0x4e,0xa9,0x6c,0x56,0xf4,0xea,0x65,0x7a,0xae,0x08,
+  0xba,0x78,0x25,0x2e,0x1c,0xa6,0xb4,0xc6,0xe8,0xdd,0x74,0x1f,0x4b,0xbd,0x8b,0x8a,
+  0x70,0x3e,0xb5,0x66,0x48,0x03,0xf6,0x0e,0x61,0x35,0x57,0xb9,0x86,0xc1,0x1d,0x9e,
+  0xe1,0xf8,0x98,0x11,0x69,0xd9,0x8e,0x94,0x9b,0x1e,0x87,0xe9,0xce,0x55,0x28,0xdf,
+  0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16
+};
+static inline uint8_t sb(uint8_t x) { return pgm_read_byte(&AES_SBOX[x]); }
+static inline uint8_t xtime(uint8_t a) { return (a << 1) ^ (a & 0x80 ? 0x1b : 0); }
+
+static void aesExpandKey(const uint8_t* key, uint8_t rk[176]) {
+  static const uint8_t RC[10] = {0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36};
+  memcpy(rk, key, 16);
+  for (uint8_t i = 1; i <= 10; i++) {
+    uint8_t* p = rk + i * 16;
+    uint8_t* q = p - 16;
+    p[0] = q[0] ^ sb(q[13]) ^ RC[i-1];
+    p[1] = q[1] ^ sb(q[14]);
+    p[2] = q[2] ^ sb(q[15]);
+    p[3] = q[3] ^ sb(q[12]);
+    for (uint8_t j = 4; j < 16; j++) p[j] = q[j] ^ p[j-4];
+  }
+}
+
+static void aesBlock(const uint8_t rk[176], const uint8_t in[16], uint8_t out[16]) {
+  uint8_t s[16], t;
+  for (uint8_t i = 0; i < 16; i++) s[i] = in[i] ^ rk[i];
+  for (uint8_t r = 1; r <= 10; r++) {
+    for (uint8_t i = 0; i < 16; i++) s[i] = sb(s[i]);                 // SubBytes
+    t=s[1];  s[1]=s[5];  s[5]=s[9];  s[9]=s[13]; s[13]=t;            // ShiftRows row1
+    t=s[2];  s[2]=s[10]; s[10]=t;    t=s[6]; s[6]=s[14]; s[14]=t;    // ShiftRows row2
+    t=s[15]; s[15]=s[11]; s[11]=s[7]; s[7]=s[3]; s[3]=t;             // ShiftRows row3
+    if (r < 10) {                                                       // MixColumns
+      for (uint8_t c = 0; c < 4; c++) {
+        uint8_t* p = s + c * 4;
+        uint8_t a=p[0], b=p[1], c2=p[2], d=p[3];
+        p[0] = xtime(a) ^ (xtime(b)^b) ^ c2 ^ d;
+        p[1] = a ^ xtime(b) ^ (xtime(c2)^c2) ^ d;
+        p[2] = a ^ b ^ xtime(c2) ^ (xtime(d)^d);
+        p[3] = (xtime(a)^a) ^ b ^ c2 ^ xtime(d);
+      }
+    }
+    for (uint8_t i = 0; i < 16; i++) s[i] ^= rk[r * 16 + i];         // AddRoundKey
+  }
+  memcpy(out, s, 16);
+}
+
+// AES-128-CTR encrypt/decrypt (same operation). Counter increments big-endian
+// from byte [15], matching mbedTLS behaviour on the receiver.
+static void aesCtr128(const uint8_t* key, const uint8_t* iv,
+                      const uint8_t* in, uint8_t* out, size_t len) {
+  static uint8_t rk[176];   // static: keeps off the 2.5 KB stack
+  aesExpandKey(key, rk);
+  uint8_t ctr[16], ks[16];
+  memcpy(ctr, iv, 16);
+  for (size_t i = 0; i < len; ) {
+    aesBlock(rk, ctr, ks);
+    for (int8_t j = 15; j >= 0; j--) { if (++ctr[j]) break; }        // increment counter
+    size_t blk = (len - i < 16) ? len - i : 16;
+    for (size_t k = 0; k < blk; k++) out[i+k] = in[i+k] ^ ks[k];
+    i += blk;
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // Build packet — key=value, ASCII. ~70 bytes worst case.
 //
 // Field key meanings (kept short to save airtime):
@@ -765,12 +852,8 @@ void sendPacket(uint8_t pktType) {
   iv[1] = (uint8_t)(bootCount & 0xFF);
   iv[2] = (uint8_t)(bootCount >> 8);
 
-  CTR<AES128> ctr;
-  ctr.setKey(key, 16);
-  ctr.setIV(iv, 16);
-
   uint8_t cipherBuf[128];
-  ctr.encrypt(cipherBuf, (const uint8_t*)pkt.c_str(), pkt.length());
+  aesCtr128(key, iv, (const uint8_t*)pkt.c_str(), cipherBuf, pkt.length());
 
   LoRa.idle();                          // standby — needed before TX
   // Heartbeats use RFO pin at reduced power; reed/boot keep full PA_BOOST.
