@@ -206,7 +206,7 @@ inside each flow and visible in the Node-RED editor.
 | File | Trigger | Message | Priority |
 |---|---|---|---|
 | `Node-RED_mail_arrived.txt` | `mailbox/state` → MAIL | "Postia laatikossa! (-95 dBm)" — live RSSI from `mailbox/sender/rssi` | 0, sound `siren` |
-| `Node-RED_battery_low.txt` | `mailbox/sender/last_packet_type` = `"heartbeat (low batt)"` | "Mailbox battery low" | 0, sound `siren` |
+| `Node-RED_battery_low.txt` | `mailbox/sender/last_packet_type` = `"heartbeat (low batt)"` | "Mailbox battery low" — repeats every 7 days until normal heartbeat arrives (V2.2.0+) | 0, sound `siren` |
 | `Node-RED_sender_boot.txt` | `mailbox/sender/boot_count` changes (rbe node blocks retained replay) | "Sender rebooted (reason: …, boot #N)" | 0, sound `siren` |
 | `Node-RED_no_mail_alert.txt` | Daily 09:00 cron — if `mailbox/last_mail_at` > 7 days ago | "Ei postia N päivään" | 1, sound `falling` (V2.2.0+ receiver required) |
 

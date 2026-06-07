@@ -319,6 +319,12 @@ Key improvements over V2_real:
 
 ## Node-RED flows
 
+### V2.2.0 — 2026-06-06
+- `Node-RED_battery_low.txt`: 7-day repeat reminder while battery stays low.
+  If the sender remains in low-battery heartbeat mode, Pushover re-fires every
+  7 days until a normal heartbeat arrives. Uses Node-RED flow context
+  (`battLowActive` flag) to track state across packets.
+
 ### V2.1.0 — 2026-06-03
 - **NEW** — `Node-RED_no_mail_alert.txt`: fires Pushover "Ei postia N päivään"
   (priority 1, sound falling) if `mailbox/last_mail_at` is older than 7 days.
