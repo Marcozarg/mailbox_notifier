@@ -1,3 +1,10 @@
+// V2.5.0 — 2026-06-07 — OLED: encryption indicator, battery % replaces voltage
+//
+// V2.5.0 changes:
+//   • OLED line2 now shows `Bat:85% rssi-75 AES` (encrypted) or
+//     `Bat:85% rssi-75 ---` (legacy plaintext). Voltage removed to make room.
+//     `lastPkt.encrypted` flag set from the raw 0xAE magic byte before decrypt.
+//
 // V2.4.0 — 2026-06-06 — AES-128-CTR decryption (receiver side)
 //
 // V2.4.0 changes:
@@ -364,7 +371,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.4.0"
+#define FW_VERSION "V2.5.0"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -561,6 +568,7 @@ struct {
   String   fw          = "";      // V1.0.8 — sender firmware string from &fw= field
   float    rssi        = 0;
   float    snr         = 0;
+  bool     encrypted   = false;   // true when packet began with 0xAE magic byte
 } lastPkt;
 
 // MQTT reconnect state.
@@ -869,6 +877,7 @@ void loop() {
     if (_radiolib_status == RADIOLIB_ERR_NONE) {
       float rssi = radio.getRSSI();
       float snr  = radio.getSNR();
+      lastPkt.encrypted = (rawLen >= 1 && rawBuf[0] == 0xAE);
       String payload = loraDecrypt(rawBuf, rawLen);
       LOG("lora", "RX [%s] rssi=%.1f snr=%.1f", payload.c_str(), rssi, snr);
       parseAndDispatch(payload, rssi, snr);
@@ -1481,10 +1490,10 @@ void renderOled() {
     } else {
       snprintf(line1, sizeof(line1), "sensor !ok");
     }
-    snprintf(line2, sizeof(line2), "%.2fV %s%% rssi%d",
-             lastPkt.vbatMv / 1000.0,
+    snprintf(line2, sizeof(line2), "Bat:%s%% rssi%d %s",
              batteryPercentString(lastPkt.vbatMv).c_str(),
-             (int) lastPkt.rssi);
+             (int) lastPkt.rssi,
+             lastPkt.encrypted ? "AES" : "---");
     display.drawString(0, 44, line1);
     display.drawString(0, 54, line2);
   } else {

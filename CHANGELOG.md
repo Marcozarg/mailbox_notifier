@@ -302,6 +302,11 @@ Key improvements over V2_real:
   Changed unique_id to `"reboot_receiver"` to match. Old retained config topic
   `homeassistant/button/receiver_reboot/config` added to `clearOldDiscovery()`.
 
+### V2.5.0 — 2026-06-07
+- OLED line2 now shows `Bat:85% rssi-75 AES` (encrypted sender) or
+  `Bat:85% rssi-75 ---` (legacy plaintext sender). Voltage removed to make room.
+  `lastPkt.encrypted` flag is set from the raw `0xAE` magic byte before decryption.
+
 ### V2.4.0 — 2026-06-06
 - AES-128-CTR decryption support (receiver side).
   Encrypted packets are identified by magic byte `0xAE` in position 0, followed
