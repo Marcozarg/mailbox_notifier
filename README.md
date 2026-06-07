@@ -276,16 +276,15 @@ If you see `0x77`, SDO is not at GND.
 
 ### arduino_secrets.h
 
-The receiver uses `firmware/mailbox_receiver/arduino_secrets.h` (not in git).
-The sender will also need one when AES encryption (V2.3.0) is flashed.
+Both devices use a local `arduino_secrets.h` (gitignored) copied from the `.example` template in each firmware folder.
+
+**Receiver** (`firmware/mailbox_receiver/`):
 
 ```bash
 cd firmware/mailbox_receiver/
 cp arduino_secrets.h.example arduino_secrets.h
 # edit arduino_secrets.h
 ```
-
-Required fields:
 
 | Field | Value |
 |---|---|
@@ -295,8 +294,27 @@ Required fields:
 | `SECRET_MQTT_USER` | Mosquitto username |
 | `SECRET_MQTT_PASS` | Mosquitto password |
 | `SECRET_DOMAINNAME` | Your LAN domain (e.g. `homenet.io`) — used for DHCP hostname |
+| `LORA_AES_KEY` | 16-byte AES-128 key — must match the sender (V2.4.0+) |
 
-The sender will also need `arduino_secrets.h` once AES encryption (sender V2.3.0) is flashed — copy `firmware/mailbox_sender/arduino_secrets.h.example` and add the pre-shared key. Until then the sender has no secrets file (no WiFi or MQTT).
+**Sender** (`firmware/mailbox_sender/`):
+
+```bash
+cd firmware/mailbox_sender/
+cp arduino_secrets.h.example arduino_secrets.h
+# edit arduino_secrets.h
+```
+
+| Field | Value |
+|---|---|
+| `LORA_AES_KEY` | 16-byte AES-128 key — must match the receiver (V2.3.0+) |
+
+The sender has no WiFi or MQTT, so only the AES key is needed. Generate a key with:
+
+```bash
+python3 -c "import os; print(', '.join(f'0x{b:02X}' for b in os.urandom(16)))"
+```
+
+> **Note:** The receiver (V2.4.0+) accepts both encrypted and legacy plaintext packets. OTA-flash the receiver first, then flash the sender at any convenient time — no service gap during the transition.
 
 ---
 
@@ -549,7 +567,11 @@ can't drift between header and runtime.
 .
 ├── firmware/
 │   ├── mailbox_sender/             Sender firmware (Feather 32u4)
+│   │   ├── mailbox_sender.ino
+│   │   └── arduino_secrets.h.example   (copy → arduino_secrets.h, add LORA_AES_KEY)
 │   └── mailbox_receiver/           Receiver firmware (Heltec V3)
+│       ├── mailbox_receiver.ino
+│       └── arduino_secrets.h.example   (copy → arduino_secrets.h, add WiFi/MQTT/LORA_AES_KEY)
 ├── Node-RED/                       Flow exports (import into HA Node-RED)
 │   ├── Node-RED_mail_arrived.txt
 │   ├── Node-RED_battery_low.txt
