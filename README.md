@@ -276,10 +276,11 @@ If you see `0x77`, SDO is not at GND.
 
 ### arduino_secrets.h
 
-The receiver uses `firmware/mailbox_receiver_V3/arduino_secrets.h` (not in git).
+The receiver uses `firmware/mailbox_receiver/arduino_secrets.h` (not in git).
+The sender will also need one when AES encryption (V2.3.0) is flashed.
 
 ```bash
-cd firmware/mailbox_receiver_V3/
+cd firmware/mailbox_receiver/
 cp arduino_secrets.h.example arduino_secrets.h
 # edit arduino_secrets.h
 ```
@@ -301,7 +302,7 @@ The sender has no `arduino_secrets.h` — it only talks LoRa, no WiFi or MQTT.
 
 ### Build toggles — sender
 
-Set these **before** compiling. All live at the top of `mailbox_sender_V3.ino`.
+Set these **before** compiling. All live at the top of `mailbox_sender.ino`.
 
 | Macro | Production | Bench | Effect |
 |---|---|---|---|
@@ -328,7 +329,7 @@ Set these **before** compiling. All live at the top of `mailbox_sender_V3.ino`.
 
 **1. Flash receiver**
 
-- Open `firmware/mailbox_receiver_V3/mailbox_receiver_V3.ino` in Arduino IDE
+- Open `firmware/mailbox_receiver/mailbox_receiver.ino` in Arduino IDE
 - Board: **Heltec WiFi LoRa 32(V3)**, Port: USB COM port
 - Upload → watch Serial Monitor (115200 baud)
 - Wait for: `[disc] Publishing 21 entity configs`
@@ -345,7 +346,7 @@ Set these **before** compiling. All live at the top of `mailbox_sender_V3.ino`.
 **3. Flash sender**
 
 - Set `DEBUG_NOSLEEP 1`, `ENABLE_SERIAL 1` for bench test first
-- Open `firmware/mailbox_sender_V3/mailbox_sender_V3.ino`
+- Open `firmware/mailbox_sender/mailbox_sender.ino`
 - Board: **Adafruit Feather 32u4**, Port: USB COM port
 - **Unplug LiPo before plugging USB** (undefined behaviour during reset spike)
 - Upload
@@ -547,8 +548,8 @@ can't drift between header and runtime.
 ```
 .
 ├── firmware/
-│   ├── mailbox_sender_V3/          Sender firmware (Feather 32u4)
-│   └── mailbox_receiver_V3/        Receiver firmware (Heltec V3)
+│   ├── mailbox_sender/             Sender firmware (Feather 32u4)
+│   └── mailbox_receiver/           Receiver firmware (Heltec V3)
 ├── Node-RED/                       Flow exports (import into HA Node-RED)
 │   ├── Node-RED_mail_arrived.txt
 │   ├── Node-RED_battery_low.txt

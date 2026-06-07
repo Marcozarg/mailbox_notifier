@@ -105,8 +105,8 @@
 //
 // V1.0.6 changes:
 //   • Cosmetic — sketch and parent folder renamed from
-//     `adafruit_Lora_32u4_Mailbox_Sender_V3` → `mailbox_sender_V3`.
-//     Shorter, easier to type, mirrors `mailbox_receiver_V3` naming.
+//     `adafruit_Lora_32u4_Mailbox_Sender_V3` → `mailbox_sender_V3`
+//     (later further simplified to `mailbox_sender` — no `_V3` suffix).
 //     No behavioural change.
 //
 // V1.0.5 changes:
@@ -174,7 +174,7 @@
 //   • Boot packet on every cold start, including the AVR reset reason for diagnostics.
 //
 // Hardware reference: SENDER_HARDWARE.md in this folder. Pin map matches that doc exactly.
-// Receiver pair: mailbox_receiver_V3.ino in the same folder.
+// Receiver pair: mailbox_receiver.ino in firmware/mailbox_receiver/.
 //
 // Versioning scheme (also applies to other coding projects):
 //   V1.0.x = bug fix, comment, typo, cosmetic-only edit
