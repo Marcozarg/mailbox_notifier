@@ -126,6 +126,9 @@ wakes on lid-open ISR, reads BME280, transmits key=value LoRa packet at +20 dBm,
 
 ## Receiver
 
+### V2.5.1 — 2026-06-15
+- Retain all sensor and diagnostic values through HA boot: temperature, humidity, pressure, sensor_ok, freq_error, receiver_wifi_rssi, receiver_uptime now published retained so Mosquitto replays them immediately after HA restart.
+
 ### V1.0.0
 Initial V3 rewrite (Heltec WiFi LoRa 32 V3, RadioLib via `heltec_unofficial.h`).
 Key improvements over V2_real:

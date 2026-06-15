@@ -1,3 +1,12 @@
+// V2.5.1 — 2026-06-15 — Retain all sensor and diagnostic values through HA boot
+//
+// V2.5.1 changes:
+//   • All publishOne() calls now pass retained=true: temperature, humidity,
+//     pressure, sensor_ok, freq_error, receiver_wifi_rssi, receiver_uptime.
+//     Previously these went unavailable after HA/Mosquitto restart until the
+//     next LoRa packet arrived (up to 48 h). Now Mosquitto replays them
+//     immediately on reconnect.
+//
 // V2.5.0 — 2026-06-07 — OLED: encryption indicator, battery % replaces voltage
 //
 // V2.5.0 changes:
@@ -371,7 +380,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.5.0"
+#define FW_VERSION "V2.5.1"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -1337,9 +1346,9 @@ void publishOnePacket() {
   // Only publish sensor values when sok=1 — sok=0 means the sender's BME280
   // failed and the values are stale. Publishing stale values would mislead HA.
   if (lastPkt.sensorOk) {
-    publishOne(T_S_TEMPERATURE, String(lastPkt.tempC,       2));
-    publishOne(T_S_HUMIDITY,    String(lastPkt.humidPct));
-    publishOne(T_S_PRESSURE,    String(lastPkt.pressureHpa, 1));
+    publishOne(T_S_TEMPERATURE, String(lastPkt.tempC,       2), true);
+    publishOne(T_S_HUMIDITY,    String(lastPkt.humidPct),       true);
+    publishOne(T_S_PRESSURE,    String(lastPkt.pressureHpa, 1), true);
   }
   publishOne(T_S_BATTERY_VOLTAGE,  String(lastPkt.vbatMv / 1000.0, 2),         true);
   publishOne(T_S_BATTERY_PERCENT,  batteryPercentString(lastPkt.vbatMv),       true);
@@ -1347,7 +1356,7 @@ void publishOnePacket() {
   publishOne(T_S_PACKET_SEQ,       String(lastPkt.seq),                        true);
   publishOne(T_S_RSSI,             String(lastPkt.rssi, 1),                    true);
   publishOne(T_S_SNR,              String(lastPkt.snr,  1),                    true);
-  publishOne(T_S_SENSOR_OK,        lastPkt.sensorOk ? "true" : "false");
+  publishOne(T_S_SENSOR_OK,        lastPkt.sensorOk ? "true" : "false",        true);
   publishOne(T_S_BOOT_COUNT,       String(lastPkt.bootCount),                  true);
   if (lastPkt.bootReason.length()) publishOne(T_S_BOOT_REASON, lastPkt.bootReason, true);
   if (lastPkt.fw.length())         publishOne(T_S_VERSION,     lastPkt.fw,         true);
@@ -1364,7 +1373,7 @@ void publishOnePacket() {
 
   // V1.3.0: packet loss counter + frequency error.
   publishOne(T_S_PACKET_LOSS, String(packetLossCount), true);
-  publishOne(T_S_FREQ_ERROR,  String(radio.getFrequencyError(), 1));
+  publishOne(T_S_FREQ_ERROR,  String(radio.getFrequencyError(), 1), true);
 
   // V1.1.0 (Q3-b): the V2_real `mailboxstatus/feather` JSON-blob publish has
   // been removed. All values are now first-class HA entities on their own
@@ -1373,11 +1382,11 @@ void publishOnePacket() {
 }
 
 void publishDiagnostics() {
-  publishOne(T_R_WIFI_RSSI, String(WiFi.RSSI()));
+  publishOne(T_R_WIFI_RSSI, String(WiFi.RSSI()), true);
   // V1.0.8: uptime in days, 2 decimals (was seconds in V1.0.7).
   //   86 400 000 ms = 1 day. Float division so fractional days render correctly.
   //   Discovery unit_of_measurement was changed from "s" → "d" in lockstep.
-  publishOne(T_R_UPTIME, String(millis() / 86400000.0, 2));
+  publishOne(T_R_UPTIME, String(millis() / 86400000.0, 2), true);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
