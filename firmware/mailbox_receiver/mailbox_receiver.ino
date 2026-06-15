@@ -1,4 +1,4 @@
-// V2.5.1 — 2026-06-15 — Retain all sensor and diagnostic values through HA boot
+// V2.6.0 — 2026-06-15 — Retain all sensor and diagnostic values through HA boot
 //
 // V2.5.1 changes:
 //   • All publishOne() calls now pass retained=true: temperature, humidity,
@@ -380,7 +380,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.5.1"
+#define FW_VERSION "V2.6.0"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and

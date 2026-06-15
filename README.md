@@ -110,9 +110,9 @@ Forward-compatible by design — receiver ignores unknown keys.
 | Topic | Direction | Retained | Notes |
 |---|---|---|---|
 | `mailbox/state` | RX ↔ HA | yes | `MAIL` / `EMPTY` — sticky, bidirectional |
-| `mailbox/sender/temperature` | RX → HA | no | °C |
-| `mailbox/sender/humidity` | RX → HA | no | % |
-| `mailbox/sender/pressure` | RX → HA | no | hPa |
+| `mailbox/sender/temperature` | RX → HA | yes | °C |
+| `mailbox/sender/humidity` | RX → HA | yes | % |
+| `mailbox/sender/pressure` | RX → HA | yes | hPa |
 | `mailbox/sender/battery_voltage` | RX → HA | yes | V |
 | `mailbox/sender/battery_percent` | RX → HA | yes | %, computed from LiPo curve |
 | `mailbox/sender/battery_days` | RX → HA | yes | estimated days remaining (V2.3.0+) |
@@ -120,17 +120,17 @@ Forward-compatible by design — receiver ignores unknown keys.
 | `mailbox/sender/last_packet_type` | RX → HA | yes | human label: mail / heartbeat / heartbeat (low batt) / boot |
 | `mailbox/sender/boot_count` | RX → HA | yes | EEPROM-backed |
 | `mailbox/sender/boot_reason` | RX → HA | yes | power-on / external reset / watchdog / brown-out / normal |
-| `mailbox/sender/sensor_ok` | RX → HA | no | side channel, no HA entity |
+| `mailbox/sender/sensor_ok` | RX → HA | yes | side channel, no HA entity |
 | `mailbox/sender/alive` | RX → HA | yes | true/false, timeout-driven (98 h) |
 | `mailbox/sender/version` | RX → HA | yes | sender FW string |
 | `mailbox/sender/rssi` | RX → HA | yes | dBm of last RX packet (V2.1.0+) |
 | `mailbox/sender/snr` | RX → HA | yes | dB of last RX packet (V2.1.0+) |
 | `mailbox/sender/last_seen` | RX → HA | yes | ISO 8601 NTP timestamp (V2.1.0+) |
 | `mailbox/sender/packet_loss` | RX → HA | yes | cumulative missed-seq count (V2.1.0+) |
-| `mailbox/sender/freq_error` | RX → HA | no | Hz, sender crystal drift (V2.1.0+) |
+| `mailbox/sender/freq_error` | RX → HA | yes | Hz, sender crystal drift (V2.1.0+) |
 | `mailbox/receiver/online` | RX LWT | yes | true/false, LWT-managed |
-| `mailbox/receiver/wifi_rssi` | RX → HA | no | dBm |
-| `mailbox/receiver/uptime` | RX → HA | no | days, 2 decimals |
+| `mailbox/receiver/wifi_rssi` | RX → HA | yes | dBm |
+| `mailbox/receiver/uptime` | RX → HA | yes | days, 2 decimals |
 | `mailbox/receiver/crc_errors` | RX → HA | yes | cumulative CRC decode failures (V2.2.0+) |
 | `mailbox/last_mail_at` | RX → HA | yes | ISO 8601 timestamp of last MAIL event (V2.2.0+) |
 | `mailbox/cmd/reboot` | HA → RX | — | any payload → ESP.restart() (V1.3.0+) |
