@@ -126,6 +126,9 @@ wakes on lid-open ISR, reads BME280, transmits key=value LoRa packet at +20 dBm,
 
 ## Receiver
 
+### V2.7.1 — 2026-06-15
+- Fix compile error: timegm() unavailable in Arduino-ESP32 SDK; replaced with inline civil-date-to-epoch formula.
+
 ### V2.7.0 — 2026-06-15
 - sender_alive no longer goes disconnected on receiver reboot. lastPacketRxTime (NTP epoch) recovered from retained mailbox/sender/last_seen on every connect; alive check skips until recovered.
 

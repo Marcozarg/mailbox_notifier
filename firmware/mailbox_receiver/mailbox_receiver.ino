@@ -1,3 +1,9 @@
+// V2.7.1 — 2026-06-15 — Fix compile: timegm not in Arduino-ESP32; use civil-date formula
+//
+// V2.7.1 changes:
+//   • Replaced timegm() call (unavailable in Arduino-ESP32 SDK) with an inline
+//     civil-date-to-epoch formula in the T_S_LAST_SEEN recovery path.
+//
 // V2.7.0 — 2026-06-15 — sender_alive survives receiver reboot; recovered from last_seen
 //
 // V2.7.0 changes:
@@ -394,7 +400,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.7.0"
+#define FW_VERSION "V2.7.1"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -697,7 +703,12 @@ void onMqttMessage(int messageSize) {
   if (topic == T_S_LAST_SEEN) {
     struct tm tmParsed = {};
     if (strptime(payload.c_str(), "%Y-%m-%dT%H:%M:%SZ", &tmParsed)) {
-      lastPacketRxTime = timegm(&tmParsed);
+      // timegm not available in Arduino-ESP32; compute UTC epoch with civil-date formula.
+      int y = tmParsed.tm_year + 1900, mo = tmParsed.tm_mon + 1, d = tmParsed.tm_mday;
+      if (mo <= 2) { y--; mo += 12; }
+      long days = 365L*y + y/4 - y/100 + y/400 + (153*mo - 457)/5 + d - 719469L;
+      lastPacketRxTime = days * 86400L + tmParsed.tm_hour * 3600L
+                         + tmParsed.tm_min * 60L + tmParsed.tm_sec;
       LOG("watch", "lastPacketRxTime recovered: %s", payload.c_str());
     }
     return;
