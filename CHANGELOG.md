@@ -126,6 +126,9 @@ wakes on lid-open ISR, reads BME280, transmits key=value LoRa packet at +20 dBm,
 
 ## Receiver
 
+### V2.7.0 — 2026-06-15
+- sender_alive no longer goes disconnected on receiver reboot. lastPacketRxTime (NTP epoch) recovered from retained mailbox/sender/last_seen on every connect; alive check skips until recovered.
+
 ### V2.6.0 — 2026-06-15
 - Retain all sensor and diagnostic values through HA boot: temperature, humidity, pressure, sensor_ok, freq_error, receiver_wifi_rssi, receiver_uptime now published retained so Mosquitto replays them immediately after HA restart.
 

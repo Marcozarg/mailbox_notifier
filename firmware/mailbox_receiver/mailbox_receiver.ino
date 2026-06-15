@@ -1,3 +1,17 @@
+// V2.7.0 — 2026-06-15 — sender_alive survives receiver reboot; recovered from last_seen
+//
+// V2.7.0 changes:
+//   • sender_alive no longer goes false on receiver reboot. Root cause: the alive
+//     check used millis()-based lastPacketRxMs which resets to 0 on every boot,
+//     causing an immediate false publish that overwrote the retained true.
+//   • Fix: add time_t lastPacketRxTime (NTP epoch). Set on each RX. Recovered
+//     on (re)boot by subscribing to retained T_S_LAST_SEEN in connectMqtt() and
+//     parsing the ISO 8601 value in onMqttMessage() via strptime/timegm.
+//   • Alive check now skips entirely until lastPacketRxTime > 0, then uses
+//     time(nullptr) - lastPacketRxTime vs the 98 h timeout.
+//   • senderAliveLast initialised to false (was true) so first positive result
+//     correctly publishes true.
+//
 // V2.6.0 — 2026-06-15 — Retain all sensor and diagnostic values through HA boot
 //
 // V2.5.1 changes:
@@ -380,7 +394,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.6.0"
+#define FW_VERSION "V2.7.0"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -536,7 +550,8 @@ volatile bool rxFlag = false;
 // Last-seen state of the sender (used for dup-seq detection + sender_alive timeout).
 int8_t        lastSeq          = -1;          // -1 = never seen
 unsigned long lastPacketRxMs   = 0;           // millis of last valid RX
-bool          senderAliveLast  = true;        // last value published, only republish on change
+time_t        lastPacketRxTime = 0;           // NTP epoch of last valid RX; recovered from T_S_LAST_SEEN on boot
+bool          senderAliveLast  = false;       // last value published, only republish on change
 
 // Sticky mail state — recovered from broker at boot (subscribe to T_STATE retained).
 bool          mailState        = false;       // false = EMPTY, true = MAIL
@@ -674,6 +689,18 @@ void onMqttMessage(int messageSize) {
       mailState = newState;
       LOG("state", "sync from broker → %s", newState ? "MAIL" : "EMPTY");
     }
+    return;
+  }
+
+  // V2.7.0: recover lastPacketRxTime from the retained last_seen on (re)boot so
+  // sender_alive is not falsely cleared between receiver restart and next LoRa packet.
+  if (topic == T_S_LAST_SEEN) {
+    struct tm tmParsed = {};
+    if (strptime(payload.c_str(), "%Y-%m-%dT%H:%M:%SZ", &tmParsed)) {
+      lastPacketRxTime = timegm(&tmParsed);
+      LOG("watch", "lastPacketRxTime recovered: %s", payload.c_str());
+    }
+    return;
   }
 }
 
@@ -904,16 +931,18 @@ void loop() {
     RADIOLIB_OR_HALT(radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF));
   }
 
-  // Sender-alive watchdog — flag the sender dead if quiet too long.
-  bool senderAliveNow = (lastPacketRxMs > 0) &&
-                        (millis() - lastPacketRxMs < SENDER_ALIVE_TIMEOUT_MS);
-  if (senderAliveNow != senderAliveLast) {
-    if (mqttClient.connected()) {
-      mqttClient.beginMessage(T_S_ALIVE, true, 1);   // retained, QoS 1
-      mqttClient.print(senderAliveNow ? "true" : "false");
-      mqttClient.endMessage();
-      senderAliveLast = senderAliveNow;
-      LOG("watch", "sender_alive → %s", senderAliveNow ? "true" : "false");
+  // Sender-alive watchdog — skip until lastPacketRxTime is known (recovered from
+  // broker retained T_S_LAST_SEEN or set on first RX). This prevents a false
+  // "disconnected" publish immediately after receiver boot (V2.7.0).
+  if (lastPacketRxTime > 0) {
+    bool senderAliveNow = (time(nullptr) - lastPacketRxTime) <
+                          (long)(SENDER_ALIVE_TIMEOUT_MS / 1000UL);
+    if (senderAliveNow != senderAliveLast) {
+      if (mqttClient.connected()) {
+        publishOne(T_S_ALIVE, senderAliveNow ? "true" : "false", true);
+        senderAliveLast = senderAliveNow;
+        LOG("watch", "sender_alive → %s", senderAliveNow ? "true" : "false");
+      }
     }
   }
 
@@ -1027,6 +1056,11 @@ void connectMqtt() {
   // and syncs mailState — so the receiver always knows the true state.
   mqttClient.subscribe(T_STATE);
   LOG("mqtt", "Subscribed to %s", T_STATE);
+
+  // V2.7.0: subscribe to recover lastPacketRxTime on (re)boot — broker replays
+  // the retained last_seen immediately, letting sender_alive survive restarts.
+  mqttClient.subscribe(T_S_LAST_SEEN);
+  LOG("mqtt", "Subscribed to %s", T_S_LAST_SEEN);
 
   // V1.3.0: subscribe to the remote-reboot command topic.
   mqttClient.subscribe(T_CMD_REBOOT);
@@ -1269,6 +1303,7 @@ void parseAndDispatch(const String& payload, float rssi, float snr) {
 
   lastSeq          = (int8_t) seq;
   lastPacketRxMs   = millis();
+  lastPacketRxTime = time(nullptr);
   lastDisplayActivityMs = millis();         // wake OLED on packet
   if (!displayOn) { display.displayOn(); displayOn = true; }    // V1.0.5: soft wake
 
