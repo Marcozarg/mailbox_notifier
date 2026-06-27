@@ -126,6 +126,9 @@ wakes on lid-open ISR, reads BME280, transmits key=value LoRa packet at +20 dBm,
 
 ## Receiver
 
+### V2.8.0 — 2026-06-27
+- Non-blocking boot: LoRa armed first (~1 s), WiFi started async, OTA/NTP deferred to first WiFi connect, MQTT/discovery deferred to first MQTT connect. Receiver no longer stalls on boot screen after power outage while router recovers.
+
 ### V2.7.1 — 2026-06-15
 - Fix compile error: timegm() unavailable in Arduino-ESP32 SDK; replaced with inline civil-date-to-epoch formula.
 

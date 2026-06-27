@@ -1,3 +1,18 @@
+// V2.8.0 — 2026-06-27 — Non-blocking boot: LoRa first, WiFi async, MQTT deferred
+//
+// V2.8.0 changes:
+//   • LoRa is now armed in setup() before any WiFi attempt — packets are
+//     received and queued the moment the chip comes out of reset.
+//   • WiFi.begin() fires in setup() without waiting. setup() returns in ~1 s.
+//     Loop() detects first WiFi-connected event and initialises OTA + NTP there.
+//   • MQTT connect + discovery publish are deferred to loop() via existing
+//     exponential-backoff logic — broker-not-ready after power outage is handled
+//     automatically, no boot loop.
+//   • connectWifi() removed; ESP32 auto-reconnect handles all reconnections.
+//   • New flags: wifiReady, otaReady, discoveryDone track one-time per-boot init.
+//   • Splash hold shortened 2000 ms → 500 ms; renderOled() immediately shows
+//     real wifi?/mqtt? status so the user can see recovery progress.
+//
 // V2.7.1 — 2026-06-15 — Fix compile: timegm not in Arduino-ESP32; use civil-date formula
 //
 // V2.7.1 changes:
@@ -400,7 +415,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.7.1"
+#define FW_VERSION "V2.8.0"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -617,6 +632,11 @@ unsigned long lastDiagPublishMs = 0;
 bool          btnLastPressed     = false;
 unsigned long btnPressStartMs    = 0;
 
+// V2.8.0: per-boot init flags for the non-blocking boot sequence.
+bool wifiReady     = false;  // WiFi has connected at least once this boot
+bool otaReady      = false;  // ArduinoOTA.begin() called
+bool discoveryDone = false;  // publishDiscoveryAll() sent at least once this boot
+
 ////////////////////////////////////////////////////////////////////////////////
 // Logging helper — prints to Serial (when enabled) AND OLED status line.
 // Use `both.print/println/printf` from the Heltec library — same idea.
@@ -631,7 +651,7 @@ unsigned long btnPressStartMs    = 0;
 // Forward declarations — must precede onMqttMessage / setup / loop because
 // some of those functions call helpers defined further down the file.
 ////////////////////////////////////////////////////////////////////////////////
-void connectWifi();
+void initOTA();
 void connectMqtt();
 void clearOldDiscovery();
 void publishDiscoveryAll();
@@ -752,125 +772,9 @@ void setup() {
   esp_task_wdt_init(&wdtConfig);
   esp_task_wdt_add(NULL);
 
-  // WiFi + MQTT + LoRa, in that order. Each function blocks until success or
-  // until WDT bites — the WDT is the safety net against truly broken networks.
-  connectWifi();
-
-  // NTP — Finnish pool, Helsinki TZ with DST. configTzTime handles all of this.
-  // POSIX TZ string for Europe/Helsinki: EET-2EEST,M3.5.0/3,M10.5.0/4
-  configTzTime("EET-2EEST,M3.5.0/3,M10.5.0/4", "fi.pool.ntp.org", "pool.ntp.org");
-  LOG("ntp", "Sync requested, waiting up to 10 s...");
-
-  // V1.0.3: actively wait for NTP. configTzTime is async — without this, the
-  // first received packet would publish mailbox/last_seen as Unknown because
-  // time(nullptr) returns 0 until the first NTP exchange completes (~1–3 s
-  // typical, sometimes slower). 10 s ceiling means a misconfigured network
-  // doesn't block boot forever — we proceed without NTP and last_seen just
-  // stays Unknown until sync eventually succeeds.
-  unsigned long ntpStart = millis();
-  while (time(nullptr) < 1700000000 && millis() - ntpStart < 10000) {
-    delay(500);
-    esp_task_wdt_reset();
-  }
-  if (time(nullptr) > 1700000000) {
-    time_t now = time(nullptr);
-    struct tm tmInfo;
-    localtime_r(&now, &tmInfo);
-    char buf[32];
-    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmInfo);
-    LOG("ntp", "Synced after %lu ms: %s", (unsigned long)(millis() - ntpStart), buf);
-  } else {
-    LOG("ntp", "FAILED to sync within 10 s — proceeding (will retry passively)");
-  }
-
-  // ArduinoOTA — no password (per project decision: trust the LAN).
-  //
-  // V1.1.1: WDT-kick from the OTA callbacks. ArduinoOTA.handle() blocks the
-  // main loop() during the entire upload, so the normal `esp_task_wdt_reset()`
-  // call at the top of loop() never runs — without this the 30 s WDT trips
-  // mid-upload and the chip resets (manifests as WinError 10054 in Arduino
-  // IDE at ~50 %). Kicking the WDT from onProgress (fires every few KB) keeps
-  // it happy for the full upload while still catching real firmware hangs.
-  ArduinoOTA.setHostname(WIFI_HOSTNAME);   // V1.2.3 — was "arduinomailman"
-  ArduinoOTA.onStart([]() {
-    LOG("ota", "OTA update starting — pausing main loop");
-    // V1.1.1: silence the LoRa interrupt during OTA. RadioLib's DIO1 ISR
-    // pokes SPI when a packet arrives, and a flash-erase landing on the same
-    // SPI bus is a recipe for corruption. On a successful OTA the chip
-    // reboots and re-initialises radio cleanly; the onError path re-arms RX
-    // so a failed upload doesn't leave us LoRa-deaf until manual reboot.
-    radio.clearDio1Action();
-    esp_task_wdt_reset();
-    if (!displayOn) { display.displayOn(); displayOn = true; }
-    display.cls();
-    display.setFont(ArialMT_Plain_16);
-    display.drawString(0, 0,  "OTA UPDATE");
-    display.setFont(ArialMT_Plain_10);
-    display.drawString(0, 22, "do not power off");
-    display.display();
-  });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    esp_task_wdt_reset();   // V1.1.1 — the actual reason this whole block exists
-    // Update the OLED progress bar every ~5 % to avoid spamming the SSD1306
-    // I2C bus and slowing the upload itself.
-    static unsigned int lastShownPct = 101;
-    unsigned int pct = total ? (progress * 100U) / total : 0;
-    if (pct != lastShownPct && pct % 5 == 0) {
-      lastShownPct = pct;
-      display.cls();
-      display.setFont(ArialMT_Plain_16);
-      display.drawString(0, 0,  "OTA UPDATE");
-      display.setFont(ArialMT_Plain_10);
-      char line[24];
-      snprintf(line, sizeof(line), "%u%%   %u / %u", pct, progress, total);
-      display.drawString(0, 22, line);
-      // Simple progress bar across the bottom row.
-      int barW = (int) ((128 * (uint32_t) progress) / (total ? total : 1));
-      display.drawRect(0, 50, 128, 10);
-      display.fillRect(0, 50, barW, 10);
-      display.display();
-    }
-  });
-  ArduinoOTA.onEnd([]() {
-    esp_task_wdt_reset();
-    LOG("ota", "OTA complete, rebooting");
-    display.cls();
-    display.setFont(ArialMT_Plain_16);
-    display.drawString(0, 16, "OTA OK");
-    display.drawString(0, 36, "rebooting");
-    display.display();
-  });
-  ArduinoOTA.onError([](ota_error_t e) {
-    esp_task_wdt_reset();
-    LOG("ota", "OTA error %d — restoring LoRa RX", (int) e);
-    // Re-arm the LoRa interrupt and receiver so a failed upload doesn't
-    // leave us deaf. The interrupt was cleared in onStart; restore it.
-    radio.setDio1Action(onLoraRx);
-    radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF);
-    display.cls();
-    display.setFont(ArialMT_Plain_16);
-    display.drawString(0, 0,  "OTA FAILED");
-    display.setFont(ArialMT_Plain_10);
-    char line[24];
-    snprintf(line, sizeof(line), "err %d", (int) e);
-    display.drawString(0, 22, line);
-    display.drawString(0, 36, "LoRa restored");
-    display.display();
-  });
-  ArduinoOTA.begin();
-  LOG("ota", "OTA ready @ %s", WiFi.localIP().toString().c_str());
-
-  connectMqtt();           // includes LWT setup + T_STATE subscribe (V1.2.4)
-  publishDiscoveryAll();   // 18 entities × discovery JSON; HA dedups by unique_id
-
-  // Register the MQTT message handler once — it is stored in the client object
-  // and persists across reconnects, so this only needs to happen at boot.
-  // T_STATE subscription lives in connectMqtt() (V1.2.4) so it is re-registered
-  // on every reconnect. The broker replays the retained mailbox/state value on
-  // the first poll() in loop(), syncing mailState before any packet arrives.
-  mqttClient.onMessage(onMqttMessage);
-
-  // LoRa init — uses the Heltec library's pre-wired SX1262 pin map.
+  // V2.8.0: LoRa first — armed and listening before WiFi even starts.
+  // Packets received while WiFi/MQTT are still connecting are handled in
+  // loop() and queued via pendingMailState if MQTT is not yet up.
   RADIOLIB_OR_HALT(radio.begin());
   radio.setDio1Action(onLoraRx);
   RADIOLIB_OR_HALT(radio.setFrequency(FREQUENCY));
@@ -879,11 +783,27 @@ void setup() {
   RADIOLIB_OR_HALT(radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF));
   LOG("lora", "RX armed @ %.2f MHz BW %.1f kHz SF%d", FREQUENCY, BANDWIDTH, SPREADING_FACTOR);
 
+  // V2.8.0: WiFi starts but setup() does NOT wait for it. Loop() detects the
+  // first WL_CONNECTED event and initialises OTA + NTP there. MQTT and
+  // discovery are deferred to the first successful MQTT connect in loop().
+  // ESP32 auto-reconnects using these credentials after any later drop.
+  WiFi.setHostname(WIFI_HOSTNAME "." SECRET_DOMAINNAME);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(SECRET_SSID, SECRET_PASS);
+  LOG("wifi", "Connecting to %s (async)...", SECRET_SSID);
+
+  // ArduinoOTA — no password (per project decision: trust the LAN).
+  // V2.8.0: initOTA() is called from loop() on first WiFi connect.
+  //
+  // Register the MQTT message handler once — it is stored in the client object
+  // and persists across reconnects, so this only needs to happen at boot.
+  mqttClient.onMessage(onMqttMessage);
+
   lastDisplayActivityMs = millis();
   lastDiagPublishMs     = millis();
   esp_task_wdt_reset();
-  delay(2000);                 // hold the splash for 2 s
-  renderOled();
+  delay(500);    // brief splash so "Booting..." is readable before status takes over
+  renderOled();  // shows wifi?/mqtt? immediately so recovery progress is visible
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -892,19 +812,38 @@ void setup() {
 void loop() {
   esp_task_wdt_reset();
   heltec_loop();             // services button + battery measurement state
-  ArduinoOTA.handle();
+  if (otaReady) ArduinoOTA.handle();
 
-  // WiFi — auto-reconnect if it dropped.
-  if (WiFi.status() != WL_CONNECTED) {
-    LOG("wifi", "Disconnected — reconnecting");
-    connectWifi();
+  // V2.8.0: WiFi state machine — non-blocking. ESP32 auto-reconnects after
+  // a drop using the credentials from WiFi.begin() called in setup().
+  bool wifiNow = (WiFi.status() == WL_CONNECTED);
+  if (wifiNow && !wifiReady) {
+    wifiReady = true;
+    LOG("wifi", "Connected ip=%s rssi=%d", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+    // One-time per-boot init that requires WiFi.
+    if (!otaReady) {
+      initOTA();
+      otaReady = true;
+    }
+    // NTP — fire and forget; syncs in background within a few seconds.
+    // POSIX TZ string for Europe/Helsinki: EET-2EEST,M3.5.0/3,M10.5.0/4
+    configTzTime("EET-2EEST,M3.5.0/3,M10.5.0/4", "fi.pool.ntp.org", "pool.ntp.org");
+    LOG("ntp", "Sync requested");
+  } else if (!wifiNow && wifiReady) {
+    wifiReady = false;
+    LOG("wifi", "Disconnected");
   }
 
   // MQTT — non-blocking poll, reconnect with exponential backoff if needed.
+  // Only attempt when WiFi is up; discovery is published on the first connect.
   if (mqttClient.connected()) {
+    if (!discoveryDone) {
+      publishDiscoveryAll();
+      discoveryDone = true;
+    }
     mqttClient.poll();
     mqttBackoffMs = MQTT_RECONNECT_MIN_MS;   // reset backoff on success
-  } else if (millis() >= mqttNextAttemptMs) {
+  } else if (wifiReady && millis() >= mqttNextAttemptMs) {
     LOG("mqtt", "Disconnected — reconnect attempt");
     connectMqtt();
     if (!mqttClient.connected()) {
@@ -980,24 +919,78 @@ void loop() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// WiFi connect — blocks until joined or WDT bites.
+// OTA init — called from loop() on first WiFi connect (V2.8.0).
+// V1.1.1: WDT-kick from the OTA callbacks. ArduinoOTA.handle() blocks the
+// main loop() during the entire upload, so the normal esp_task_wdt_reset()
+// call at the top of loop() never runs — without this the 30 s WDT trips
+// mid-upload and the chip resets (manifests as WinError 10054 in Arduino
+// IDE at ~50 %). Kicking the WDT from onProgress (fires every few KB) keeps
+// it happy for the full upload while still catching real firmware hangs.
 ////////////////////////////////////////////////////////////////////////////////
-void connectWifi() {
-  // V1.2.2: hostname composed at compile time from WIFI_HOSTNAME + the user's
-  // LAN domain in secrets. Result e.g. "mailbox.homenet.io". Whether the
-  // router actually registers this into local DNS depends on the DHCP server
-  // config, but at minimum the FQDN shows up in lease tables. V1.2.3 keeps
-  // the OTA mDNS name (`WIFI_HOSTNAME` alone, i.e. "mailbox.local") aligned
-  // so the IDE port list reads `mailbox at <IP>`.
-  WiFi.setHostname(WIFI_HOSTNAME "." SECRET_DOMAINNAME);
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(SECRET_SSID, SECRET_PASS);
-  LOG("wifi", "Connecting to %s (hostname %s.%s)", SECRET_SSID, WIFI_HOSTNAME, SECRET_DOMAINNAME);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    esp_task_wdt_reset();         // keep the watchdog quiet during the join
-  }
-  LOG("wifi", "OK ip=%s rssi=%d", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+void initOTA() {
+  ArduinoOTA.setHostname(WIFI_HOSTNAME);   // V1.2.3 — was "arduinomailman"
+  ArduinoOTA.onStart([]() {
+    LOG("ota", "OTA update starting — pausing main loop");
+    // V1.1.1: silence the LoRa interrupt during OTA. RadioLib's DIO1 ISR
+    // pokes SPI when a packet arrives, and a flash-erase landing on the same
+    // SPI bus is a recipe for corruption. On a successful OTA the chip
+    // reboots and re-initialises radio cleanly; the onError path re-arms RX
+    // so a failed upload doesn't leave us LoRa-deaf until manual reboot.
+    radio.clearDio1Action();
+    esp_task_wdt_reset();
+    if (!displayOn) { display.displayOn(); displayOn = true; }
+    display.cls();
+    display.setFont(ArialMT_Plain_16);
+    display.drawString(0, 0,  "OTA UPDATE");
+    display.setFont(ArialMT_Plain_10);
+    display.drawString(0, 22, "do not power off");
+    display.display();
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    esp_task_wdt_reset();   // V1.1.1 — the actual reason this whole block exists
+    static unsigned int lastShownPct = 101;
+    unsigned int pct = total ? (progress * 100U) / total : 0;
+    if (pct != lastShownPct && pct % 5 == 0) {
+      lastShownPct = pct;
+      display.cls();
+      display.setFont(ArialMT_Plain_16);
+      display.drawString(0, 0,  "OTA UPDATE");
+      display.setFont(ArialMT_Plain_10);
+      char line[24];
+      snprintf(line, sizeof(line), "%u%%   %u / %u", pct, progress, total);
+      display.drawString(0, 22, line);
+      int barW = (int) ((128 * (uint32_t) progress) / (total ? total : 1));
+      display.drawRect(0, 50, 128, 10);
+      display.fillRect(0, 50, barW, 10);
+      display.display();
+    }
+  });
+  ArduinoOTA.onEnd([]() {
+    esp_task_wdt_reset();
+    LOG("ota", "OTA complete, rebooting");
+    display.cls();
+    display.setFont(ArialMT_Plain_16);
+    display.drawString(0, 16, "OTA OK");
+    display.drawString(0, 36, "rebooting");
+    display.display();
+  });
+  ArduinoOTA.onError([](ota_error_t e) {
+    esp_task_wdt_reset();
+    LOG("ota", "OTA error %d — restoring LoRa RX", (int) e);
+    radio.setDio1Action(onLoraRx);
+    radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF);
+    display.cls();
+    display.setFont(ArialMT_Plain_16);
+    display.drawString(0, 0,  "OTA FAILED");
+    display.setFont(ArialMT_Plain_10);
+    char line[24];
+    snprintf(line, sizeof(line), "err %d", (int) e);
+    display.drawString(0, 22, line);
+    display.drawString(0, 36, "LoRa restored");
+    display.display();
+  });
+  ArduinoOTA.begin();
+  LOG("ota", "OTA ready @ %s", WiFi.localIP().toString().c_str());
 }
 
 ////////////////////////////////////////////////////////////////////////////////
