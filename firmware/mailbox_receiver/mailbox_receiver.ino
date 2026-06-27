@@ -1,3 +1,14 @@
+// V2.10.0 — 2026-06-27 — OLED: redraw only on change, clock removed
+//
+// V2.10.0 changes:
+//   • Main screen no longer redraws every second. oledDirty flag is set at
+//     every point content actually changes: new LoRa packet, mail state change,
+//     WiFi/MQTT connect or disconnect, boot→main transition. Eliminates the
+//     1 Hz flicker caused by cls()+redraw even when nothing moved.
+//   • Boot screen still redraws every second (countdown needs it).
+//   • Clock (HH:MM) removed from main screen top row — screen auto-offs in
+//     10 min anyway and it was the only reason for the 1 s refresh.
+//
 // V2.9.0 — 2026-06-27 — OLED overhaul: live boot screen, main screen with IP + combined bottom line
 //
 // V2.9.0 changes:
@@ -428,7 +439,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.9.0"
+#define FW_VERSION "V2.10.0"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -658,6 +669,9 @@ bool discoveryDone = false;  // publishDiscoveryAll() sent at least once this bo
 bool          bootScreenDone = false;  // false = show boot screen, true = show main screen
 unsigned long bootOkSinceMs  = 0;     // millis() when all services first came up together
 
+// V2.10.0: dirty flag — main screen only redraws when this is set.
+bool oledDirty = true;  // true at boot so first draw happens immediately
+
 ////////////////////////////////////////////////////////////////////////////////
 // Logging helper — prints to Serial (when enabled) AND OLED status line.
 // Use `both.print/println/printf` from the Heltec library — same idea.
@@ -734,6 +748,7 @@ void onMqttMessage(int messageSize) {
     bool newState = (payload == "MAIL");
     if (newState != mailState) {
       mailState = newState;
+      oledDirty = true;
       LOG("state", "sync from broker → %s", newState ? "MAIL" : "EMPTY");
     }
     return;
@@ -840,6 +855,7 @@ void loop() {
   bool wifiNow = (WiFi.status() == WL_CONNECTED);
   if (wifiNow && !wifiReady) {
     wifiReady = true;
+    oledDirty = true;
     LOG("wifi", "Connected ip=%s rssi=%d", WiFi.localIP().toString().c_str(), WiFi.RSSI());
     // One-time per-boot init that requires WiFi.
     if (!otaReady) {
@@ -852,12 +868,20 @@ void loop() {
     LOG("ntp", "Sync requested");
   } else if (!wifiNow && wifiReady) {
     wifiReady = false;
+    oledDirty = true;
     LOG("wifi", "Disconnected");
   }
 
   // MQTT — non-blocking poll, reconnect with exponential backoff if needed.
   // Only attempt when WiFi is up; discovery is published on the first connect.
-  if (mqttClient.connected()) {
+  // Track connection state changes to trigger an OLED redraw.
+  static bool prevMqttConnected = false;
+  bool mqttNow = mqttClient.connected();
+  if (mqttNow != prevMqttConnected) {
+    prevMqttConnected = mqttNow;
+    oledDirty = true;
+  }
+  if (mqttNow) {
     if (!discoveryDone) {
       publishDiscoveryAll();
       discoveryDone = true;
@@ -933,6 +957,7 @@ void loop() {
     }
     if (bootOkSinceMs > 0 && millis() - bootOkSinceMs >= BOOT_SCREEN_HOLD_MS) {
       bootScreenDone = true;
+      oledDirty = true;
     }
   }
 
@@ -944,11 +969,18 @@ void loop() {
     LOG("oled", "auto-off");
   }
 
-  // OLED refresh — once a second is enough; the display lambda is cheap.
+  // OLED refresh — boot screen updates every second (countdown); main screen
+  // only redraws when oledDirty is set (content actually changed).
   static unsigned long lastOledRefreshMs = 0;
-  if (displayOn && millis() - lastOledRefreshMs > 1000) {
-    renderOled();
-    lastOledRefreshMs = millis();
+  if (displayOn) {
+    if (!bootScreenDone && millis() - lastOledRefreshMs > 1000) {
+      renderOled();
+      lastOledRefreshMs = millis();
+    } else if (bootScreenDone && oledDirty) {
+      renderOled();
+      oledDirty = false;
+      lastOledRefreshMs = millis();
+    }
   }
 }
 
@@ -1071,6 +1103,7 @@ void connectMqtt() {
     mailState            = true;
     lastMailTransitionMs = millis();
     pendingMailState     = false;
+    oledDirty            = true;
     LOG("state", "MAIL → published (deferred from MQTT-disconnected period)");
     // V2.2.0: publish the timestamp recorded when the reed event fired offline.
     if (lastMailAt > 0) {
@@ -1343,6 +1376,7 @@ void parseAndDispatch(const String& payload, float rssi, float snr) {
   lastPacketRxMs   = millis();
   lastPacketRxTime = time(nullptr);
   lastDisplayActivityMs = millis();         // wake OLED on packet
+  oledDirty = true;
   if (!displayOn) { display.displayOn(); displayOn = true; }    // V1.0.5: soft wake
 
   if (mqttClient.connected()) {
@@ -1372,6 +1406,7 @@ void parseAndDispatch(const String& payload, float rssi, float snr) {
         // V1.1.0 (Q3-b): legacy `mailboxstatus/switch=ON` publish removed.
         mailState = true;                            // moved (V1.0.6 fix A)
         lastMailTransitionMs = millis();             // moved (V1.0.6 fix A)
+        oledDirty = true;
         LOG("state", "MAIL → published (reed event)");
         // V2.2.0: publish last_mail_at in lockstep with MAIL.
         if (lastMailAt > 0) {
@@ -1594,17 +1629,9 @@ void renderOled() {
     // Main screen
     // -------------------------------------------------------------------------
 
-    // Row 0: WiFi/MQTT/clock (left) + version (right)
+    // Row 0: WiFi/MQTT status (left) + version (right)
     String topRow = (WiFi.status() == WL_CONNECTED) ? "WiFi " : "wifi? ";
-    topRow += (mqttClient.connected())               ? "MQTT " : "mqtt? ";
-    time_t now = time(nullptr);
-    if (now > 1700000000UL) {
-      struct tm tmInfo;
-      localtime_r(&now, &tmInfo);
-      char hm[8];
-      strftime(hm, sizeof(hm), "%H:%M", &tmInfo);
-      topRow += hm;
-    }
+    topRow += (mqttClient.connected())               ? "MQTT" : "mqtt?";
     display.drawString(0, 0, topRow);
     display.setTextAlignment(TEXT_ALIGN_RIGHT);
     display.drawString(128, 0, FW_VERSION);
@@ -1706,6 +1733,7 @@ void clearMailState(const char* source) {
     mqttClient.print("EMPTY");
     mqttClient.endMessage();
     mailState = false;                           // moved (V1.0.6 fix A)
+    oledDirty = true;
     LOG("state", "EMPTY ← cleared by %s", source);
   } else {
     LOG("state", "EMPTY clear PENDING (source=%s) — MQTT disconnected; retry later", source);
