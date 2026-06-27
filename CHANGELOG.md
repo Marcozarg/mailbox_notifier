@@ -5,7 +5,20 @@ LoRa) and receiver (Heltec WiFi LoRa 32 V3). Ascending order, oldest first.
 
 ---
 
-## Sender
+## Sender M0 (Adafruit Feather M0 RFM95 — ATSAMD21G18)
+
+### V1.0.0 — 2026-06-27
+- New file `firmware/mailbox_sender_M0/mailbox_sender_M0.ino` — port of sender V2.3.1
+  to Adafruit Feather M0 RFM95 (ATSAMD21G18 + RFM95 SX1276, `adafruit:samd:adafruit_feather_m0`).
+  Functional parity: AES-128-CTR encryption, 48 h heartbeat, reed wake, BME280, battery voltage.
+  Packet format and LoRa parameters unchanged; receiver compatibility preserved.
+  Platform differences from 32u4: `LORA_IRQ` 7→3, `PIN_LED` 5→13, sleep via
+  `Adafruit_SleepyDog`, storage via `FlashStorage`, boot reason via `PM->RCAUSE.reg`,
+  no `PROGMEM`/`pgm_read_byte` in AES S-box, no `disableUsb()`.
+
+---
+
+## Sender (Adafruit Feather 32u4 LoRa — ATmega32u4)
 
 ### V1.0.0
 Initial release. Battery-powered reed-switch sensor: deep-sleeps in AVR PWR_DOWN,
