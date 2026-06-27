@@ -198,7 +198,7 @@ void setup() {
   SLOG("[snd] upload window 20s — reset + upload now to flash easily");
   delay(BOOT_UPLOAD_WINDOW_MS);
   SLOG("[snd] entering sleep loop");
-  // No disableUsb() on M0 — SAMD21 standby reduces USB power automatically.
+  USBDevice.detach();   // disconnect D+; PHY drops to ~0 mA. To reflash: double-tap reset.
 #endif
 }
 
