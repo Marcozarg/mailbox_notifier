@@ -1,3 +1,10 @@
+// V2.10.1 — 2026-06-27 — OLED: boot column aligned, no-mail indicator removed
+//
+// V2.10.1 changes:
+//   • Boot screen status values (OK / connecting... / waiting) drawn at fixed
+//     x=44, aligning with "RX" in the "Mailbox RX" title row.
+//   • Main screen: "-" removed when no mail — area is simply blank.
+//
 // V2.10.0 — 2026-06-27 — OLED: redraw only on change, clock removed
 //
 // V2.10.0 changes:
@@ -439,7 +446,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.10.0"
+#define FW_VERSION "V2.10.1"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -1586,32 +1593,37 @@ void renderOled() {
     display.drawString(128, 0, FW_VERSION);
     display.setTextAlignment(TEXT_ALIGN_LEFT);
 
+    // Rows 1-4: labels left-aligned, values at x=44 (aligns with "RX" in title).
     // Row 1: LoRa — always OK if we reached loop() (RADIOLIB_OR_HALT guards init)
-    display.drawString(0, 11, "LoRa   OK");
+    display.drawString(0,  11, "LoRa");
+    display.drawString(44, 11, "OK");
 
-    // Row 2: WiFi — shows IP once connected
+    // Row 2: WiFi — appends IP once connected
+    display.drawString(0, 22, "WiFi");
     if (wifiReady) {
-      String wLine = "WiFi   OK ";
-      wLine += WiFi.localIP().toString();
-      display.drawString(0, 22, wLine);
+      String wVal = "OK ";
+      wVal += WiFi.localIP().toString();
+      display.drawString(44, 22, wVal);
     } else {
-      display.drawString(0, 22, "WiFi   connecting...");
+      display.drawString(44, 22, "connecting...");
     }
 
     // Row 3: MQTT
+    display.drawString(0, 33, "MQTT");
     if (mqttClient.connected()) {
-      display.drawString(0, 33, "MQTT   OK");
+      display.drawString(44, 33, "OK");
     } else if (wifiReady) {
-      display.drawString(0, 33, "MQTT   connecting...");
+      display.drawString(44, 33, "connecting...");
     } else {
-      display.drawString(0, 33, "MQTT   waiting");
+      display.drawString(44, 33, "waiting");
     }
 
     // Row 4: NTP
+    display.drawString(0, 44, "NTP");
     if (time(nullptr) > 1700000000UL) {
-      display.drawString(0, 44, "NTP    OK");
+      display.drawString(44, 44, "OK");
     } else {
-      display.drawString(0, 44, "NTP    waiting");
+      display.drawString(44, 44, "waiting");
     }
 
     // Row 5: countdown (only once all services are up)
@@ -1655,8 +1667,6 @@ void renderOled() {
         mailLine += dateBuf;
       }
       display.drawString(64, 22, mailLine);
-    } else {
-      display.drawString(64, 22, "-");
     }
     display.setFont(ArialMT_Plain_10);
     display.setTextAlignment(TEXT_ALIGN_LEFT);
