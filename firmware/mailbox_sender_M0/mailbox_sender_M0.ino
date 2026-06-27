@@ -258,7 +258,7 @@ void loop() {
 void loop() {
   bool reedAttached = false;
   if (lockoutTicksRemaining == 0 && digitalRead(PIN_REED) == HIGH) {
-    attachInterrupt(digitalPinToInterrupt(PIN_REED), reedWakeISR, LOW);
+    attachInterrupt(digitalPinToInterrupt(PIN_REED), reedWakeISR, FALLING);
     reedAttached = true;
   }
 
