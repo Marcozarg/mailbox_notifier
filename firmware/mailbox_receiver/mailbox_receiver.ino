@@ -1,3 +1,16 @@
+// V2.9.0 — 2026-06-27 — OLED overhaul: live boot screen, main screen with IP + combined bottom line
+//
+// V2.9.0 changes:
+//   • Boot screen is now live-updating: shows LoRa/WiFi/MQTT/NTP status rows
+//     with plain-text OK / connecting... / waiting. IP appears on the WiFi
+//     line as soon as DHCP assigns it.
+//   • 30-second countdown after all services are up, then switches to main screen.
+//     Countdown resets if any service drops during the hold.
+//   • Main screen: IP row (row 1) always visible. MAIL indicator changed from
+//     24px to 16px to fit "MAIL dd.mm" on one row; date only shown when mail
+//     is present and lastMailAt timestamp is known. "—" when no mail.
+//   • Bottom row consolidated to one line: temp, humidity, battery%, rssi, AES.
+//
 // V2.8.0 — 2026-06-27 — Non-blocking boot: LoRa first, WiFi async, MQTT deferred
 //
 // V2.8.0 changes:
@@ -415,7 +428,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.8.0"
+#define FW_VERSION "V2.9.0"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -557,6 +570,10 @@ const char T_CMD_REBOOT[]     = "mailbox/cmd/reboot";               // any paylo
 #define MQTT_RECONNECT_MIN_MS    5000UL
 #define MQTT_RECONNECT_MAX_MS    300000UL
 
+// Boot screen hold: once LoRa+WiFi+MQTT+NTP are all up, show the boot screen
+// for this long before switching to the main display.
+#define BOOT_SCREEN_HOLD_MS      30000UL
+
 // Discovery republish at boot only — HA dedups by unique_id, no need to spam.
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -636,6 +653,10 @@ unsigned long btnPressStartMs    = 0;
 bool wifiReady     = false;  // WiFi has connected at least once this boot
 bool otaReady      = false;  // ArduinoOTA.begin() called
 bool discoveryDone = false;  // publishDiscoveryAll() sent at least once this boot
+
+// V2.9.0: boot screen state.
+bool          bootScreenDone = false;  // false = show boot screen, true = show main screen
+unsigned long bootOkSinceMs  = 0;     // millis() when all services first came up together
 
 ////////////////////////////////////////////////////////////////////////////////
 // Logging helper — prints to Serial (when enabled) AND OLED status line.
@@ -900,6 +921,19 @@ void loop() {
   if (mqttClient.connected() && millis() - lastDiagPublishMs > DIAG_PUBLISH_INTERVAL_MS) {
     publishDiagnostics();
     lastDiagPublishMs = millis();
+  }
+
+  // V2.9.0: boot screen countdown — switch to main screen 30 s after all services up.
+  if (!bootScreenDone) {
+    bool allOk = wifiReady && mqttClient.connected() && (time(nullptr) > 1700000000UL);
+    if (allOk && bootOkSinceMs == 0) {
+      bootOkSinceMs = millis();
+    } else if (!allOk) {
+      bootOkSinceMs = 0;  // any service dropped — reset countdown
+    }
+    if (bootOkSinceMs > 0 && millis() - bootOkSinceMs >= BOOT_SCREEN_HOLD_MS) {
+      bootScreenDone = true;
+    }
   }
 
   // Button + OLED.
@@ -1500,52 +1534,123 @@ String loraDecrypt(const uint8_t* raw, size_t len) {
 
 ////////////////////////////////////////////////////////////////////////////////
 // OLED render — called once a second when display is on.
+// V2.9.0: two modes — boot screen (live status rows) and main screen.
 ////////////////////////////////////////////////////////////////////////////////
 void renderOled() {
   display.cls();
   display.setFont(ArialMT_Plain_10);
 
-  // Top row: WiFi/MQTT status + clock on the left, FW version on the right.
-  // V1.0.8: version moved here from the boot-only splash so it's always visible.
-  String topRow = (WiFi.status() == WL_CONNECTED) ? "WiFi " : "wifi? ";
-  topRow += (mqttClient.connected())               ? "MQTT " : "mqtt? ";
-  time_t now = time(nullptr);
-  if (now > 1700000000) {
-    struct tm tmInfo;
-    localtime_r(&now, &tmInfo);
-    char hm[8];
-    strftime(hm, sizeof(hm), "%H:%M", &tmInfo);
-    topRow += hm;
-  }
-  display.drawString(0, 0, topRow);
-  // Right-justified FW version. Reset alignment afterwards so the rest of
-  // renderOled() keeps drawing left-aligned as it always has.
-  display.setTextAlignment(TEXT_ALIGN_RIGHT);
-  display.drawString(128, 0, FW_VERSION);
-  display.setTextAlignment(TEXT_ALIGN_LEFT);
+  if (!bootScreenDone) {
+    // -------------------------------------------------------------------------
+    // Boot screen — live status rows, then 30 s countdown before switching.
+    // -------------------------------------------------------------------------
 
-  // Big middle: MAIL / —
-  display.setFont(ArialMT_Plain_24);
-  display.drawString(36, 18, mailState ? "MAIL" : "—");
-  display.setFont(ArialMT_Plain_10);
+    // Row 0: title (left) + version (right)
+    display.drawString(0, 0, "Mailbox RX");
+    display.setTextAlignment(TEXT_ALIGN_RIGHT);
+    display.drawString(128, 0, FW_VERSION);
+    display.setTextAlignment(TEXT_ALIGN_LEFT);
 
-  // Bottom rows: latest sensor + link
-  if (lastSeq >= 0) {
-    char line1[32], line2[32];
-    if (lastPkt.sensorOk && !isnan(lastPkt.tempC)) {
-      snprintf(line1, sizeof(line1), "%.1fC %d%% %.0fhPa",
-               lastPkt.tempC, lastPkt.humidPct, lastPkt.pressureHpa);
+    // Row 1: LoRa — always OK if we reached loop() (RADIOLIB_OR_HALT guards init)
+    display.drawString(0, 11, "LoRa   OK");
+
+    // Row 2: WiFi — shows IP once connected
+    if (wifiReady) {
+      String wLine = "WiFi   OK ";
+      wLine += WiFi.localIP().toString();
+      display.drawString(0, 22, wLine);
     } else {
-      snprintf(line1, sizeof(line1), "sensor !ok");
+      display.drawString(0, 22, "WiFi   connecting...");
     }
-    snprintf(line2, sizeof(line2), "Bat:%s%% rssi%d %s",
-             batteryPercentString(lastPkt.vbatMv).c_str(),
-             (int) lastPkt.rssi,
-             lastPkt.encrypted ? "AES" : "---");
-    display.drawString(0, 44, line1);
-    display.drawString(0, 54, line2);
+
+    // Row 3: MQTT
+    if (mqttClient.connected()) {
+      display.drawString(0, 33, "MQTT   OK");
+    } else if (wifiReady) {
+      display.drawString(0, 33, "MQTT   connecting...");
+    } else {
+      display.drawString(0, 33, "MQTT   waiting");
+    }
+
+    // Row 4: NTP
+    if (time(nullptr) > 1700000000UL) {
+      display.drawString(0, 44, "NTP    OK");
+    } else {
+      display.drawString(0, 44, "NTP    waiting");
+    }
+
+    // Row 5: countdown (only once all services are up)
+    if (bootOkSinceMs > 0) {
+      unsigned long elapsed = millis() - bootOkSinceMs;
+      int secsLeft = (int)((BOOT_SCREEN_HOLD_MS - elapsed) / 1000) + 1;
+      if (secsLeft < 1) secsLeft = 1;
+      char cntBuf[28];
+      snprintf(cntBuf, sizeof(cntBuf), "Switching in %ds...", secsLeft);
+      display.drawString(0, 54, cntBuf);
+    }
+
   } else {
-    display.drawString(0, 44, "waiting for packet");
+    // -------------------------------------------------------------------------
+    // Main screen
+    // -------------------------------------------------------------------------
+
+    // Row 0: WiFi/MQTT/clock (left) + version (right)
+    String topRow = (WiFi.status() == WL_CONNECTED) ? "WiFi " : "wifi? ";
+    topRow += (mqttClient.connected())               ? "MQTT " : "mqtt? ";
+    time_t now = time(nullptr);
+    if (now > 1700000000UL) {
+      struct tm tmInfo;
+      localtime_r(&now, &tmInfo);
+      char hm[8];
+      strftime(hm, sizeof(hm), "%H:%M", &tmInfo);
+      topRow += hm;
+    }
+    display.drawString(0, 0, topRow);
+    display.setTextAlignment(TEXT_ALIGN_RIGHT);
+    display.drawString(128, 0, FW_VERSION);
+    display.setTextAlignment(TEXT_ALIGN_LEFT);
+
+    // Row 1: IP address
+    if (WiFi.status() == WL_CONNECTED) {
+      display.drawString(0, 11, WiFi.localIP().toString());
+    }
+
+    // Row 2: MAIL dd.mm  /  — (ArialMT_Plain_16, centered)
+    display.setFont(ArialMT_Plain_16);
+    display.setTextAlignment(TEXT_ALIGN_CENTER);
+    if (mailState) {
+      String mailLine = "MAIL";
+      if (lastMailAt > 0) {
+        struct tm tmMail;
+        localtime_r(&lastMailAt, &tmMail);
+        char dateBuf[8];
+        strftime(dateBuf, sizeof(dateBuf), " %d.%m", &tmMail);
+        mailLine += dateBuf;
+      }
+      display.drawString(64, 22, mailLine);
+    } else {
+      display.drawString(64, 22, "-");
+    }
+    display.setFont(ArialMT_Plain_10);
+    display.setTextAlignment(TEXT_ALIGN_LEFT);
+
+    // Row 3: combined sensor + battery line
+    if (lastSeq >= 0) {
+      char bottom[32];
+      if (lastPkt.sensorOk && !isnan(lastPkt.tempC)) {
+        snprintf(bottom, sizeof(bottom), "%.0fC %d%% B:%s%% r%d%s",
+                 lastPkt.tempC, lastPkt.humidPct,
+                 batteryPercentString(lastPkt.vbatMv).c_str(),
+                 (int) lastPkt.rssi,
+                 lastPkt.encrypted ? " AES" : "");
+      } else {
+        snprintf(bottom, sizeof(bottom), "sensor !ok B:%s%%",
+                 batteryPercentString(lastPkt.vbatMv).c_str());
+      }
+      display.drawString(0, 46, bottom);
+    } else {
+      display.drawString(0, 46, "waiting for packet");
+    }
   }
 
   display.display();

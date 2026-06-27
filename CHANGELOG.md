@@ -126,6 +126,9 @@ wakes on lid-open ISR, reads BME280, transmits key=value LoRa packet at +20 dBm,
 
 ## Receiver
 
+### V2.9.0 — 2026-06-27
+- OLED overhaul: live boot screen with LoRa/WiFi/MQTT/NTP status rows; IP shown on WiFi line; 30 s countdown then switches to main screen. Main screen: IP row added, MAIL indicator now 16px with dd.mm date on same row, bottom consolidated to one combined sensor+battery line.
+
 ### V2.8.0 — 2026-06-27
 - Non-blocking boot: LoRa armed first (~1 s), WiFi started async, OTA/NTP deferred to first WiFi connect, MQTT/discovery deferred to first MQTT connect. Receiver no longer stalls on boot screen after power outage while router recovers.
 
