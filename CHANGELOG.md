@@ -384,6 +384,11 @@ Key improvements over V2_real:
 
 ## Node-RED flows
 
+### V2.4.0 — 2026-07-04
+- `Node-RED_mail_arrived.txt`: Temperature added to Pushover notification body.
+  Format: "Postia laatikossa! (−75 dBm, 18°C)". Subscribes to
+  `mailbox/sender/temperature` and stores in flow context alongside RSSI.
+
 ### V2.3.0 — 2026-07-04
 - `Node-RED_mail_arrived.txt`: Pushover notification now includes a deep link
   (`homeassistant://navigate/lovelace/mailbox`) so tapping "Open mailbox" in the
