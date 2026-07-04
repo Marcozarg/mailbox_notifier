@@ -384,6 +384,11 @@ Key improvements over V2_real:
 
 ## Node-RED flows
 
+### V2.3.0 — 2026-07-04
+- `Node-RED_mail_arrived.txt`: Pushover notification now includes a deep link
+  (`homeassistant://navigate/lovelace/mailbox`) so tapping "Open mailbox" in the
+  Pushover app opens the HA companion app directly to the mailbox dashboard.
+
 ### V2.2.0 — 2026-06-06
 - `Node-RED_battery_low.txt`: 7-day repeat reminder while battery stays low.
   If the sender remains in low-battery heartbeat mode, Pushover re-fires every
