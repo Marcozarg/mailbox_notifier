@@ -142,6 +142,9 @@ wakes on lid-open ISR, reads BME280, transmits key=value LoRa packet at +20 dBm,
 ### V2.10.1 — 2026-06-27
 - Boot screen: status values aligned at x=44 (same column as "RX" in title). No-mail indicator removed — area is blank when empty.
 
+### V2.11.0 — 2026-08-11
+- MQTT stuck-restart watchdog: if MQTT stays disconnected for 20 minutes despite backoff retries, force a full `ESP.restart()`. Clears wedged WiFi/socket state that in-place retry can't fix — was requiring a manual power cycle after some HA/Mosquitto reboots.
+
 ### V2.10.0 — 2026-06-27
 - Main screen now redraws only when content changes (new packet, mail state, WiFi/MQTT connect/disconnect, boot→main transition) — eliminates 1 Hz flicker. Boot screen still refreshes every second for the countdown. Clock removed from main screen top row.
 

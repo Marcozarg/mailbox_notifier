@@ -437,6 +437,7 @@ Before every flash — sender or receiver:
 | "Mailbox" device never appears in HA | MQTT TX buffer overflow — discovery JSONs (~350 bytes each) silently dropped | Verify `mqttClient.setTxPayloadSize(1024)` is in receiver setup (V1.0.2+ fix) |
 | State stays EMPTY after reed trigger, sensor data updates | `r=0` gate bug (pre-V1.2.6) or receiver lost `mailbox/state` subscription | Flash V1.2.6+; `connectMqtt()` must call `subscribe(T_STATE)` on every reconnect |
 | Mail event missed after HA reboot | Reed packet arrived during MQTT backoff window | Flash V1.2.5+; `pendingMailState` flag defers the publish until reconnect |
+| Receiver stuck offline after HA/Mosquitto reboot, needs manual power cycle | Wedged WiFi/socket state that backoff retry alone can't clear | Flash V2.11.0+; forces `ESP.restart()` after 20 min of continuous MQTT disconnection |
 | OTA upload dies at ~50% (WinError 10054) | 30 s watchdog trips during 4 KB flash erase | Flash V1.1.1+; OTA callbacks must kick `esp_task_wdt_reset()` |
 | PRG short-press doesn't wake OLED | `heltec_display_power(false)` cuts Vext, needs full re-init | Flash V1.0.5+; use `display.displayOff()` / `displayOn()` instead |
 | No packets received at all | LoRa parameter mismatch | Verify both ends: 866.0 MHz, SF9, BW 250 kHz. Even 866 vs 866.0 can cause issues in some libs |

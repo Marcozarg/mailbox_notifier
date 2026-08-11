@@ -1,3 +1,11 @@
+// V2.11.0 — 2026-08-11 — MQTT stuck-restart watchdog
+//
+// V2.11.0 changes:
+//   • If MQTT stays disconnected for 20 min despite backoff retries, force a
+//     full ESP.restart(). Clears wedged WiFi/socket state that in-place
+//     retry can't fix — was requiring a manual power cycle after some HA/
+//     Mosquitto reboots.
+//
 // V2.10.1 — 2026-06-27 — OLED: boot column aligned, no-mail indicator removed
 //
 // V2.10.1 changes:
@@ -446,7 +454,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.10.1"
+#define FW_VERSION "V2.11.0"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -588,6 +596,10 @@ const char T_CMD_REBOOT[]     = "mailbox/cmd/reboot";               // any paylo
 #define MQTT_RECONNECT_MIN_MS    5000UL
 #define MQTT_RECONNECT_MAX_MS    300000UL
 
+// V2.11.0: if MQTT stays down this long despite backoff retries, force a full
+// reboot — clears wedged WiFi/socket state that retry-in-place can't fix.
+#define MQTT_STUCK_RESTART_MS    (20UL * 60UL * 1000UL)
+
 // Boot screen hold: once LoRa+WiFi+MQTT+NTP are all up, show the boot screen
 // for this long before switching to the main display.
 #define BOOT_SCREEN_HOLD_MS      30000UL
@@ -652,8 +664,9 @@ struct {
 } lastPkt;
 
 // MQTT reconnect state.
-unsigned long mqttNextAttemptMs = 0;
-unsigned long mqttBackoffMs     = MQTT_RECONNECT_MIN_MS;
+unsigned long mqttNextAttemptMs   = 0;
+unsigned long mqttBackoffMs       = MQTT_RECONNECT_MIN_MS;
+unsigned long lastMqttConnectedMs = 0;   // V2.11.0: drives the stuck-restart timeout
 
 // OLED activity timestamp.
 unsigned long lastDisplayActivityMs = 0;
@@ -844,6 +857,7 @@ void setup() {
 
   lastDisplayActivityMs = millis();
   lastDiagPublishMs     = millis();
+  lastMqttConnectedMs   = millis();   // starts the stuck-restart countdown at boot
   esp_task_wdt_reset();
   delay(500);    // brief splash so "Booting..." is readable before status takes over
   renderOled();  // shows wifi?/mqtt? immediately so recovery progress is visible
@@ -889,18 +903,28 @@ void loop() {
     oledDirty = true;
   }
   if (mqttNow) {
+    lastMqttConnectedMs = millis();
     if (!discoveryDone) {
       publishDiscoveryAll();
       discoveryDone = true;
     }
     mqttClient.poll();
     mqttBackoffMs = MQTT_RECONNECT_MIN_MS;   // reset backoff on success
-  } else if (wifiReady && millis() >= mqttNextAttemptMs) {
-    LOG("mqtt", "Disconnected — reconnect attempt");
-    connectMqtt();
-    if (!mqttClient.connected()) {
-      mqttNextAttemptMs = millis() + mqttBackoffMs;
-      mqttBackoffMs     = min(mqttBackoffMs * 2, MQTT_RECONNECT_MAX_MS);
+  } else {
+    // V2.11.0: backoff retries alone can't clear a wedged WiFi/socket state —
+    // if MQTT has been down this long regardless, force a full reboot.
+    if (millis() - lastMqttConnectedMs > MQTT_STUCK_RESTART_MS) {
+      LOG("mqtt", "Disconnected %lu min — forcing restart", MQTT_STUCK_RESTART_MS / 60000UL);
+      delay(100);   // let the log line flush over Serial
+      ESP.restart();
+    }
+    if (wifiReady && millis() >= mqttNextAttemptMs) {
+      LOG("mqtt", "Disconnected — reconnect attempt");
+      connectMqtt();
+      if (!mqttClient.connected()) {
+        mqttNextAttemptMs = millis() + mqttBackoffMs;
+        mqttBackoffMs     = min(mqttBackoffMs * 2, MQTT_RECONNECT_MAX_MS);
+      }
     }
   }
 
