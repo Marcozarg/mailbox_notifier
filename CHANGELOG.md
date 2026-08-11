@@ -145,6 +145,10 @@ wakes on lid-open ISR, reads BME280, transmits key=value LoRa packet at +20 dBm,
 ### V2.11.0 — 2026-08-11
 - MQTT stuck-restart watchdog: if MQTT stays disconnected for 20 minutes despite backoff retries, force a full `ESP.restart()`. Clears wedged WiFi/socket state that in-place retry can't fix — was requiring a manual power cycle after some HA/Mosquitto reboots.
 
+### V2.12.0 — 2026-08-11
+- Fix: the V2.11.0 stuck-restart wiped a queued `pendingMailState` (a reed packet received while MQTT was down) before it could be published — now persisted to NVS before restart and restored in `setup()`.
+- Added `receiver_free_heap` diagnostic sensor, published every 60 s alongside uptime — early warning for `String`-related heap fragmentation over long uptimes.
+
 ### V2.10.0 — 2026-06-27
 - Main screen now redraws only when content changes (new packet, mail state, WiFi/MQTT connect/disconnect, boot→main transition) — eliminates 1 Hz flicker. Boot screen still refreshes every second for the countdown. Clock removed from main screen top row.
 

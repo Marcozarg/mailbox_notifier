@@ -1,3 +1,15 @@
+// V2.12.0 — 2026-08-11 — Stuck-restart: don't drop a queued mail event; add heap diagnostic
+//
+// V2.12.0 changes:
+//   • Fix: the V2.11.0 stuck-restart wiped a queued pendingMailState (a reed
+//     packet received while MQTT was down) before it could ever be
+//     published — the exact feature meant to reduce missed notifications
+//     could cause one. Now persisted to NVS before restart and restored
+//     in setup().
+//   • Added receiver_free_heap diagnostic (published every 60 s alongside
+//     uptime) — early warning for String-related heap fragmentation over
+//     long uptimes.
+//
 // V2.11.0 — 2026-08-11 — MQTT stuck-restart watchdog
 //
 // V2.11.0 changes:
@@ -454,7 +466,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.11.0"
+#define FW_VERSION "V2.12.0"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -503,6 +515,7 @@
 #include <esp_task_wdt.h>         // ESP-IDF watchdog API exposed in Arduino-ESP32
 #include <time.h>                 // POSIX time API for NTP-synced clock
 #include <mbedtls/aes.h>          // AES-128-CTR decrypt — part of Arduino-ESP32, no extra install
+#include <Preferences.h>          // NVS key-value store — survives the V2.11.0 stuck-restart reboot
 
 #include "arduino_secrets.h"      // SECRET_SSID / SECRET_PASS / MQTTUSER / MQTTPASS / MQTTBROKER / LORA_AES_KEY
 
@@ -559,6 +572,7 @@ const char T_R_ONLINE[]       = "mailbox/receiver/online";          // LWT-retai
 const char T_R_WIFI_RSSI[]    = "mailbox/receiver/wifi_rssi";
 const char T_R_UPTIME[]       = "mailbox/receiver/uptime";
 const char T_R_CRC_ERRORS[]   = "mailbox/receiver/crc_errors";      // retained, total_increasing
+const char T_R_FREE_HEAP[]    = "mailbox/receiver/free_heap";       // V2.12.0 — bytes free
 
 // System-level (not sender_ or receiver_ prefixed — describes the mailbox event).
 const char T_LAST_MAIL_AT[]   = "mailbox/last_mail_at";             // retained, ISO8601 of last MAIL
@@ -667,6 +681,10 @@ struct {
 unsigned long mqttNextAttemptMs   = 0;
 unsigned long mqttBackoffMs       = MQTT_RECONNECT_MIN_MS;
 unsigned long lastMqttConnectedMs = 0;   // V2.11.0: drives the stuck-restart timeout
+
+// V2.12.0: NVS store, used only to carry a pending mail event across the
+// stuck-restart reboot (see loop() and setup()) — nothing else is persisted.
+Preferences prefs;
 
 // OLED activity timestamp.
 unsigned long lastDisplayActivityMs = 0;
@@ -858,6 +876,21 @@ void setup() {
   lastDisplayActivityMs = millis();
   lastDiagPublishMs     = millis();
   lastMqttConnectedMs   = millis();   // starts the stuck-restart countdown at boot
+
+  // V2.12.0: recover a mail event that was queued (pendingMailState) but not
+  // yet published when a stuck-restart fired. Without this, a reed packet
+  // that arrived during a long MQTT outage would be silently lost the moment
+  // the 20-minute watchdog rebooted us — exactly the kind of missed
+  // notification this feature exists to prevent.
+  prefs.begin("mailbox", false);
+  if (prefs.getBool("pendMail", false)) {
+    pendingMailState = true;
+    lastMailAt       = (time_t) prefs.getULong("mailAt", 0);
+    prefs.putBool("pendMail", false);   // consumed — connectMqtt() publishes it on next connect
+    LOG("boot", "Restored pending mail event from NVS (stuck-restart recovery)");
+  }
+  prefs.end();
+
   esp_task_wdt_reset();
   delay(500);    // brief splash so "Booting..." is readable before status takes over
   renderOled();  // shows wifi?/mqtt? immediately so recovery progress is visible
@@ -915,6 +948,15 @@ void loop() {
     // if MQTT has been down this long regardless, force a full reboot.
     if (millis() - lastMqttConnectedMs > MQTT_STUCK_RESTART_MS) {
       LOG("mqtt", "Disconnected %lu min — forcing restart", MQTT_STUCK_RESTART_MS / 60000UL);
+      // V2.12.0: a mail event may be sitting in pendingMailState with nowhere
+      // to go yet — persist it so setup() can restore and flush it after reboot.
+      if (pendingMailState) {
+        prefs.begin("mailbox", false);
+        prefs.putBool("pendMail", true);
+        prefs.putULong("mailAt", (uint32_t) lastMailAt);
+        prefs.end();
+        LOG("mqtt", "Pending mail event persisted to NVS before restart");
+      }
       delay(100);   // let the log line flush over Serial
       ESP.restart();
     }
@@ -1241,8 +1283,9 @@ void publishDiscoveryAll() {
   // V2.1.0: rssi, snr, last_seen, freq_error, packet_loss moved to sender_*.
   // V2.2.0: added last_mail_at + receiver_crc_errors. 21 → 23 entities.
   // V2.3.0: added sender_battery_days. 23 → 24 entities.
+  // V2.12.0: added receiver_free_heap. 24 → 25 entities.
   clearOldDiscovery();
-  LOG("disc", "Publishing 24 entity configs");
+  LOG("disc", "Publishing 25 entity configs");
 
   // ---- Headline ------------------------------------------------------------
   // binary_sensor.mailbox_state — sticky, payload MAIL/EMPTY.
@@ -1304,6 +1347,8 @@ void publishDiscoveryAll() {
                       T_R_WIFI_RSSI, "signal_strength", "dBm", "measurement", "diagnostic");
   publishOneDiscovery("sensor", "receiver_uptime", "Receiver uptime",
                       T_R_UPTIME, "duration", "d", "total_increasing", "diagnostic");
+  publishOneDiscovery("sensor", "receiver_free_heap", "Receiver free heap",
+                      T_R_FREE_HEAP, "data_size", "B", "measurement", "diagnostic");
 
   // ---- V1.3.0 additions ---------------------------------------------------
   // Reboot button — HA sends any payload to T_CMD_REBOOT; receiver calls ESP.restart().
@@ -1526,6 +1571,9 @@ void publishDiagnostics() {
   //   86 400 000 ms = 1 day. Float division so fractional days render correctly.
   //   Discovery unit_of_measurement was changed from "s" → "d" in lockstep.
   publishOne(T_R_UPTIME, String(millis() / 86400000.0, 2), true);
+  // V2.12.0: heap headroom — early warning for String-fragmentation over
+  // long uptimes between reboots.
+  publishOne(T_R_FREE_HEAP, String(ESP.getFreeHeap()), true);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
