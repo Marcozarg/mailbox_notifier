@@ -170,7 +170,7 @@ editing needed.
 | `sensor.mailbox_receiver_uptime` | sensor | duration | days, diagnostic |
 | `sensor.mailbox_receiver_free_heap` | sensor | data_size | bytes, diagnostic (V2.12.0+) |
 | `sensor.mailbox_receiver_crc_errors` | sensor | — | total_increasing, diagnostic (V2.2.0+) |
-| `sensor.mailbox_receiver_mail_source` | sensor | — | `reed_live`/`reed_deferred`/`broker_sync`, diagnostic (V2.13.0+) |
+| `sensor.mailbox_receiver_mail_source` | sensor | — | `reed_live`/`reed_deferred`/`boot_resync`/`broker_sync`, diagnostic (V2.13.0+) |
 | `sensor.mailbox_last_mail_at` | sensor | timestamp | "X days ago", auto-rendered by HA (V2.2.0+) |
 | `button.mailbox_receiver_reboot` | button | restart | triggers ESP.restart() |
 
@@ -441,7 +441,7 @@ Before every flash — sender or receiver:
 | Mail event missed after HA reboot | Reed packet arrived during MQTT backoff window | Flash V1.2.5+; `pendingMailState` flag defers the publish until reconnect |
 | Receiver stuck offline after HA/Mosquitto reboot, needs manual power cycle | Wedged WiFi/socket state that backoff retry alone can't clear | Flash V2.11.0+; forces `ESP.restart()` after 20 min of continuous MQTT disconnection |
 | Mail event lost after a stuck-restart | Reed packet queued in `pendingMailState` (RAM) when the V2.11.0 watchdog rebooted | Flash V2.12.0+; pending mail event is persisted to NVS before restart and restored in `setup()` |
-| MAIL state appears with no matching sender packet | Unknown — under investigation | Flash V2.13.0+; check `sensor.mailbox_receiver_mail_source` next time it happens — `reed_live`/`reed_deferred` confirm a real LoRa packet, `broker_sync` means some other MQTT client published directly to `mailbox/state` |
+| MAIL state appears with no matching sender packet | Unknown — under investigation | Flash V2.13.1+; check `sensor.mailbox_receiver_mail_source` next time it happens — `reed_live`/`reed_deferred` confirm a real LoRa packet, `boot_resync` means the receiver just rebooted and adopted a pre-existing retained value (not new), `broker_sync` means some other MQTT client published directly to `mailbox/state` while the receiver was already running |
 | OTA upload dies at ~50% (WinError 10054) | 30 s watchdog trips during 4 KB flash erase | Flash V1.1.1+; OTA callbacks must kick `esp_task_wdt_reset()` |
 | PRG short-press doesn't wake OLED | `heltec_display_power(false)` cuts Vext, needs full re-init | Flash V1.0.5+; use `display.displayOff()` / `displayOn()` instead |
 | No packets received at all | LoRa parameter mismatch | Verify both ends: 866.0 MHz, SF9, BW 250 kHz. Even 866 vs 866.0 can cause issues in some libs |

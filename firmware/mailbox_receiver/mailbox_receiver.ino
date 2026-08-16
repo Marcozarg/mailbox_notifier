@@ -1,3 +1,15 @@
+// V2.13.1 — 2026-08-16 — Fix: mail_source false-positive on every reboot
+//
+// V2.13.1 changes:
+//   • BUG FIX — the V2.13.0 diagnostic labelled the very first T_STATE
+//     replay after ANY reboot as "broker_sync", even though that's just the
+//     reboot adopting whatever was already retained (e.g. right after this
+//     OTA flash, with an unresolved MAIL from before still sitting on the
+//     broker) — not a new external publish. Added bootStateSynced flag: the
+//     one-time post-boot resync is now labelled "boot_resync", so
+//     "broker_sync" is reserved for a genuinely live external publish
+//     arriving while the receiver was already up and subscribed.
+//
 // V2.13.0 — 2026-08-16 — Diagnostic: record which code path last set MAIL
 //
 // V2.13.0 changes:
@@ -478,7 +490,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.13.0"
+#define FW_VERSION "V2.13.1"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -588,7 +600,7 @@ const char T_R_FREE_HEAP[]    = "mailbox/receiver/free_heap";       // V2.12.0 �
 
 // System-level (not sender_ or receiver_ prefixed — describes the mailbox event).
 const char T_LAST_MAIL_AT[]   = "mailbox/last_mail_at";             // retained, ISO8601 of last MAIL
-const char T_R_MAIL_SOURCE[]  = "mailbox/receiver/mail_source";     // V2.13.0 — retained, reed_live/reed_deferred/broker_sync
+const char T_R_MAIL_SOURCE[]  = "mailbox/receiver/mail_source";     // V2.13.0 — retained, reed_live/reed_deferred/boot_resync/broker_sync
 
 // HA → receiver commands (V1.3.0).
 const char T_CMD_REBOOT[]     = "mailbox/cmd/reboot";               // any payload → ESP.restart()
@@ -651,6 +663,10 @@ bool          senderAliveLast  = false;       // last value published, only repu
 // Sticky mail state — recovered from broker at boot (subscribe to T_STATE retained).
 bool          mailState        = false;       // false = EMPTY, true = MAIL
 unsigned long lastMailTransitionMs = 0;       // for STATE_REPEAT_GUARD_MS
+// V2.13.1: true once the one-time post-boot T_STATE resync has happened —
+// distinguishes "this reboot adopting the prior retained value" (boot_resync)
+// from a genuinely live external publish arriving later (broker_sync).
+bool          bootStateSynced  = false;
 // V1.2.5: set when a type=1 reed event arrives while MQTT is disconnected.
 // Cleared (and MAIL published) inside connectMqtt() on the next successful connect.
 bool          pendingMailState = false;
@@ -802,12 +818,13 @@ void onMqttMessage(int messageSize) {
       mailState = newState;
       oledDirty = true;
       LOG("state", "sync from broker → %s", newState ? "MAIL" : "EMPTY");
-      // V2.13.0: this is the ONLY path where mailState flips true without the
-      // receiver itself having published mailbox/state — i.e. some other MQTT
-      // client wrote MAIL directly. Record it so a future unexplained MAIL is
-      // instantly traceable instead of requiring another round of guessing.
-      if (newState) publishMailSource("broker_sync");
+      // V2.13.1: the very first T_STATE message after any boot is just this
+      // reboot adopting whatever was already retained — not a new event. Only
+      // label it broker_sync (a genuinely live external publish) once that
+      // one-time boot resync has already happened; otherwise it's boot_resync.
+      if (newState) publishMailSource(bootStateSynced ? "broker_sync" : "boot_resync");
     }
+    bootStateSynced = true;
     return;
   }
 

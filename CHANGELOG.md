@@ -152,6 +152,9 @@ wakes on lid-open ISR, reads BME280, transmits key=value LoRa packet at +20 dBm,
 ### V2.13.0 — 2026-08-16
 - Added `receiver_mail_source` diagnostic sensor (retained `mailbox/receiver/mail_source`) — records which code path last set the sticky state to MAIL: `reed_live`, `reed_deferred`, or `broker_sync` (an external MQTT client publishing directly to `mailbox/state`). Added to diagnose a MAIL state appearing with no matching sender packet.
 
+### V2.13.1 — 2026-08-16
+- Fix: the V2.13.0 diagnostic mislabelled the one-time post-boot resync (reboot adopting whatever MAIL/EMPTY was already retained) as `broker_sync`, indistinguishable from a genuinely live external publish. Now labelled `boot_resync`; `broker_sync` is reserved for a publish arriving after that initial resync.
+
 ### V2.10.0 — 2026-06-27
 - Main screen now redraws only when content changes (new packet, mail state, WiFi/MQTT connect/disconnect, boot→main transition) — eliminates 1 Hz flicker. Boot screen still refreshes every second for the countdown. Clock removed from main screen top row.
 
