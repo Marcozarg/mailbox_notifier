@@ -139,7 +139,7 @@ Forward-compatible by design — receiver ignores unknown keys.
 
 ## Home Assistant integration
 
-### MQTT discovery — 25 entities
+### MQTT discovery — 26 entities
 
 Receiver publishes 25 retained `homeassistant/.../config` payloads at every boot. HA
 auto-creates all entities under one **"Mailbox"** device card — no `configuration.yaml`
@@ -170,6 +170,7 @@ editing needed.
 | `sensor.mailbox_receiver_uptime` | sensor | duration | days, diagnostic |
 | `sensor.mailbox_receiver_free_heap` | sensor | data_size | bytes, diagnostic (V2.12.0+) |
 | `sensor.mailbox_receiver_crc_errors` | sensor | — | total_increasing, diagnostic (V2.2.0+) |
+| `sensor.mailbox_receiver_mail_source` | sensor | — | `reed_live`/`reed_deferred`/`broker_sync`, diagnostic (V2.13.0+) |
 | `sensor.mailbox_last_mail_at` | sensor | timestamp | "X days ago", auto-rendered by HA (V2.2.0+) |
 | `button.mailbox_receiver_reboot` | button | restart | triggers ESP.restart() |
 
@@ -351,14 +352,14 @@ Set these **before** compiling. All live at the top of `mailbox_sender.ino`.
 - Open `firmware/mailbox_receiver/mailbox_receiver.ino` in Arduino IDE
 - Board: **Heltec WiFi LoRa 32(V3)**, Port: USB COM port
 - Upload → watch Serial Monitor (115200 baud)
-- Wait for: `[disc] Publishing 25 entity configs`
+- Wait for: `[disc] Publishing 26 entity configs`
 - In HA → Settings → Devices & Services → MQTT: "Mailbox" device should appear with
-  25 entities. If it doesn't appear within 30 s, check that `arduino_secrets.h` has
+  26 entities. If it doesn't appear within 30 s, check that `arduino_secrets.h` has
   the correct broker address.
 
 **2. Verify HA entities**
 
-- Mailbox device card should show all 25 entities grouped correctly
+- Mailbox device card should show all 26 entities grouped correctly
 - `binary_sensor.mailbox_state` should be `EMPTY`
 - `binary_sensor.mailbox_receiver_online` should be `true`
 
@@ -440,6 +441,7 @@ Before every flash — sender or receiver:
 | Mail event missed after HA reboot | Reed packet arrived during MQTT backoff window | Flash V1.2.5+; `pendingMailState` flag defers the publish until reconnect |
 | Receiver stuck offline after HA/Mosquitto reboot, needs manual power cycle | Wedged WiFi/socket state that backoff retry alone can't clear | Flash V2.11.0+; forces `ESP.restart()` after 20 min of continuous MQTT disconnection |
 | Mail event lost after a stuck-restart | Reed packet queued in `pendingMailState` (RAM) when the V2.11.0 watchdog rebooted | Flash V2.12.0+; pending mail event is persisted to NVS before restart and restored in `setup()` |
+| MAIL state appears with no matching sender packet | Unknown — under investigation | Flash V2.13.0+; check `sensor.mailbox_receiver_mail_source` next time it happens — `reed_live`/`reed_deferred` confirm a real LoRa packet, `broker_sync` means some other MQTT client published directly to `mailbox/state` |
 | OTA upload dies at ~50% (WinError 10054) | 30 s watchdog trips during 4 KB flash erase | Flash V1.1.1+; OTA callbacks must kick `esp_task_wdt_reset()` |
 | PRG short-press doesn't wake OLED | `heltec_display_power(false)` cuts Vext, needs full re-init | Flash V1.0.5+; use `display.displayOff()` / `displayOn()` instead |
 | No packets received at all | LoRa parameter mismatch | Verify both ends: 866.0 MHz, SF9, BW 250 kHz. Even 866 vs 866.0 can cause issues in some libs |
@@ -503,7 +505,7 @@ prevent duplicate notifications:
 | # | Decision | Choice | Why |
 |---|---|---|---|
 | 1 | Packet format | Key=value ASCII | Human-readable, forward-compatible (receiver ignores unknown keys), easy to debug on OLED. Binary would save ~80 ms airtime — not worth it at 1–2 packets/day |
-| 2 | MQTT discovery | Yes | HA auto-creates all 25 entities; no `configuration.yaml` to maintain |
+| 2 | MQTT discovery | Yes | HA auto-creates all 26 entities; no `configuration.yaml` to maintain |
 | 3 | Heartbeat cadence | 48 h normal, 6 h when vbat < 3.6 V | 48 h halves TX count vs original 24 h; low-batt boost preserves dead-battery visibility without cost |
 | 4 | Sender-alive timeout | 98 h (48 h × 2 + 2 h slack) | Tolerates one missed heartbeat before alerting |
 | 5 | Sticky mail state | Manual clear only | Auto-clear on lid-close adds complexity with no benefit — user clears when they pick up the mail |

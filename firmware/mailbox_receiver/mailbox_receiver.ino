@@ -1,3 +1,15 @@
+// V2.13.0 — 2026-08-16 — Diagnostic: record which code path last set MAIL
+//
+// V2.13.0 changes:
+//   • Added mailbox/receiver/mail_source (retained) — records which of the
+//     three code paths last flipped mailState to true: reed_live (immediate
+//     publish), reed_deferred (flushed from pendingMailState on reconnect),
+//     or broker_sync (mailState adopted a retained/live value some OTHER
+//     MQTT client published to mailbox/state). Added to disambiguate a
+//     MAIL state with no matching sender packet — HA/Node-RED config and
+//     the clear button were all individually ruled out as the source, so
+//     the next occurrence needs the firmware itself to say which path fired.
+//
 // V2.12.0 — 2026-08-11 — Stuck-restart: don't drop a queued mail event; add heap diagnostic
 //
 // V2.12.0 changes:
@@ -466,7 +478,7 @@
 // Single source of truth for the firmware version string.
 // Used by: header banner above (manual), boot Serial log, OLED splash, and
 // the "sw_version" field in every MQTT discovery payload.
-#define FW_VERSION "V2.12.0"
+#define FW_VERSION "V2.13.0"
 
 // Single source of truth for the device's host part. Combined with
 // SECRET_DOMAINNAME to form the WiFi DHCP FQDN ("mailbox.homenet.io") and
@@ -576,6 +588,7 @@ const char T_R_FREE_HEAP[]    = "mailbox/receiver/free_heap";       // V2.12.0 �
 
 // System-level (not sender_ or receiver_ prefixed — describes the mailbox event).
 const char T_LAST_MAIL_AT[]   = "mailbox/last_mail_at";             // retained, ISO8601 of last MAIL
+const char T_R_MAIL_SOURCE[]  = "mailbox/receiver/mail_source";     // V2.13.0 — retained, reed_live/reed_deferred/broker_sync
 
 // HA → receiver commands (V1.3.0).
 const char T_CMD_REBOOT[]     = "mailbox/cmd/reboot";               // any payload → ESP.restart()
@@ -729,6 +742,7 @@ void connectMqtt();
 void clearOldDiscovery();
 void publishDiscoveryAll();
 void publishOne(const char* topic, const String& value, bool retained = false);
+void publishMailSource(const char* source);
 void publishOnePacket();
 void publishDiagnostics();
 void parseAndDispatch(const String& payload, float rssi, float snr);
@@ -788,6 +802,11 @@ void onMqttMessage(int messageSize) {
       mailState = newState;
       oledDirty = true;
       LOG("state", "sync from broker → %s", newState ? "MAIL" : "EMPTY");
+      // V2.13.0: this is the ONLY path where mailState flips true without the
+      // receiver itself having published mailbox/state — i.e. some other MQTT
+      // client wrote MAIL directly. Record it so a future unexplained MAIL is
+      // instantly traceable instead of requiring another round of guessing.
+      if (newState) publishMailSource("broker_sync");
     }
     return;
   }
@@ -1178,6 +1197,7 @@ void connectMqtt() {
     pendingMailState     = false;
     oledDirty            = true;
     LOG("state", "MAIL → published (deferred from MQTT-disconnected period)");
+    publishMailSource("reed_deferred");   // V2.13.0
     // V2.2.0: publish the timestamp recorded when the reed event fired offline.
     if (lastMailAt > 0) {
       struct tm* tmInfo = gmtime(&lastMailAt);
@@ -1284,8 +1304,9 @@ void publishDiscoveryAll() {
   // V2.2.0: added last_mail_at + receiver_crc_errors. 21 → 23 entities.
   // V2.3.0: added sender_battery_days. 23 → 24 entities.
   // V2.12.0: added receiver_free_heap. 24 → 25 entities.
+  // V2.13.0: added receiver_mail_source. 25 → 26 entities.
   clearOldDiscovery();
-  LOG("disc", "Publishing 25 entity configs");
+  LOG("disc", "Publishing 26 entity configs");
 
   // ---- Headline ------------------------------------------------------------
   // binary_sensor.mailbox_state — sticky, payload MAIL/EMPTY.
@@ -1374,6 +1395,12 @@ void publishDiscoveryAll() {
   // CRC decode error counter — receiver hardware, so receiver_ prefix.
   publishOneDiscovery("sensor", "receiver_crc_errors", "Receiver CRC errors",
                       T_R_CRC_ERRORS, nullptr, nullptr, "total_increasing", "diagnostic");
+
+  // ---- V2.13.0 addition -----------------------------------------------------
+  // Diagnostic breadcrumb: which code path last set MAIL. See publishMailSource().
+  publishOneDiscovery("sensor", "receiver_mail_source", "Receiver mail source",
+                      T_R_MAIL_SOURCE, nullptr, nullptr, nullptr, "diagnostic",
+                      "\"icon\":\"mdi:source-branch\"");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1484,6 +1511,7 @@ void parseAndDispatch(const String& payload, float rssi, float snr) {
         lastMailTransitionMs = millis();             // moved (V1.0.6 fix A)
         oledDirty = true;
         LOG("state", "MAIL → published (reed event)");
+        publishMailSource("reed_live");   // V2.13.0
         // V2.2.0: publish last_mail_at in lockstep with MAIL.
         if (lastMailAt > 0) {
           struct tm* tmInfo = gmtime(&lastMailAt);
@@ -1509,6 +1537,16 @@ void parseAndDispatch(const String& payload, float rssi, float snr) {
 void publishOne(const char* topic, const String& value, bool retained) {
   mqttClient.beginMessage(topic, retained, retained ? 1 : 0);
   mqttClient.print(value);
+  mqttClient.endMessage();
+}
+
+// V2.13.0: records which code path last flipped mailState to true. Called
+// only from sites where mqttClient is already known connected (live reed
+// event, deferred flush right after a successful connect, and broker-sync
+// inside onMqttMessage — all three hold that guarantee already).
+void publishMailSource(const char* source) {
+  mqttClient.beginMessage(T_R_MAIL_SOURCE, true, 1);
+  mqttClient.print(source);
   mqttClient.endMessage();
 }
 

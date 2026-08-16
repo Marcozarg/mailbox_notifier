@@ -149,6 +149,9 @@ wakes on lid-open ISR, reads BME280, transmits key=value LoRa packet at +20 dBm,
 - Fix: the V2.11.0 stuck-restart wiped a queued `pendingMailState` (a reed packet received while MQTT was down) before it could be published — now persisted to NVS before restart and restored in `setup()`.
 - Added `receiver_free_heap` diagnostic sensor, published every 60 s alongside uptime — early warning for `String`-related heap fragmentation over long uptimes.
 
+### V2.13.0 — 2026-08-16
+- Added `receiver_mail_source` diagnostic sensor (retained `mailbox/receiver/mail_source`) — records which code path last set the sticky state to MAIL: `reed_live`, `reed_deferred`, or `broker_sync` (an external MQTT client publishing directly to `mailbox/state`). Added to diagnose a MAIL state appearing with no matching sender packet.
+
 ### V2.10.0 — 2026-06-27
 - Main screen now redraws only when content changes (new packet, mail state, WiFi/MQTT connect/disconnect, boot→main transition) — eliminates 1 Hz flicker. Boot screen still refreshes every second for the countdown. Clock removed from main screen top row.
 
