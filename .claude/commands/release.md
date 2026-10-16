@@ -124,7 +124,7 @@ If the flow is missing or unrecognised, stop and ask. When one change touches se
 
 5. **Update `README.md`** — check the Node-RED flows table (`## Node-RED flows` section) and update any behaviour descriptions that changed.
 
-6. **Update knowledge base** — edit `O:\GITHUB\KNOWLEDGE\projects.md` and update the Node-RED version if tracked. Update `O:\GITHUB\KNOWLEDGE\node-red-patterns.md` if the change introduces a new reusable pattern.
+6. **Update knowledge base** — edit `O:\GITHUB\KNOWLEDGE\projects.md` and update the Node-RED version if tracked. Update `O:\GITHUB\KNOWLEDGE\home\node-red.md` if the change introduces a new reusable pattern.
 
 7. **Commit and push:**
    ```
