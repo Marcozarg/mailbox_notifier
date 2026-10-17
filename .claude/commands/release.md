@@ -6,12 +6,14 @@ allowed-tools: Read, Edit, Glob, Grep, Bash(git *)
 
 You are executing a release for the mailbox notifier project. Parse `$ARGUMENTS` and follow the steps below exactly.
 
+Run this as the last edit, after code review and /done-check fixes.
+
 ## Versioning rules (from CLAUDE.md — enforce these)
 
 | Bump | When to use |
 |---|---|
-| `patch` | Bug fix, comment, typo, cosmetic only |
-| `minor` | Feature, behaviour tweak, UX change |
+| `patch` | Bug fix, comment, typo, cosmetic, UX tweak that does not change behaviour |
+| `minor` | Feature or behaviour change |
 | `major` | Hardware swap, MCU change, packet format break |
 
 If the requested bump type seems inconsistent with the description, say so before proceeding.

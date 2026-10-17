@@ -67,8 +67,8 @@ all derive from it. Never hardcode the version string anywhere else.
 ### Versioning rules
 | Bump | Triggers |
 |---|---|
-| `Vx.y.z` patch | Bug fix, comment, typo, cosmetic only |
-| `Vx.y` minor | Feature, behaviour tweak, UX change |
+| `Vx.y.z` patch | Bug fix, comment, typo, cosmetic, UX tweak that does not change behaviour |
+| `Vx.y` minor | Feature or behaviour change |
 | `Vx` major | Hardware swap, MCU change, packet format break |
 
 ### Section banners
@@ -79,7 +79,7 @@ all derive from it. Never hardcode the version string anywhere else.
 ```
 
 ### Comments
-- Add a `// why` comment on every non-obvious decision.
+- Comment only the WHY: a hidden constraint, a workaround or a surprising invariant.
 - Reference the version that introduced a behaviour where helpful
   (e.g. `// V1.0.6 fix A:`).
 - Forward-declarations go near the top of the file so helpers can be defined
